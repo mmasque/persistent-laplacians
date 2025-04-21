@@ -1,0 +1,12 @@
+[package]
+name = "persistent_laplacians"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pyo3 = { version = "0.17", features = ["extension-module"] }
+numpy = "0.17"
+sprs = "0.11"
+nalgebra-sparse = "0.10.0"
+nalgebra = "0.33.2"
+approx = "0.5.1"
