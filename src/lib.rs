@@ -1,11 +1,12 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use nalgebra_sparse::csr::CsrMatrix;
-use nalgebra_sparse::CooMatrix;
-use numpy::PyArray1;
+use nalgebra_sparse::{CooMatrix, CscMatrix};
+use numpy::{PyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use sprs::prod;
+use sprs::DenseVector;
 
 fn parse_nested_dict(filt: &PyDict) -> PyResult<HashMap<usize, HashMap<usize, usize>>> {
     let mut filt_map = HashMap::with_capacity(filt.len());
@@ -27,92 +28,55 @@ fn parse_nested_dict(filt: &PyDict) -> PyResult<HashMap<usize, HashMap<usize, us
     Ok(filt_map)
 }
 
-fn process_sparse_dict(dict: &PyDict) -> PyResult<HashMap<usize, CsrMatrix<f64>>> {
-    let mut result = HashMap::new();
-
-    for (key, value) in dict.iter() {
-        // Extract CSR components with zero-copy numpy array access
-        let indptr = unsafe {
-            value
-                .getattr("indptr")?
-                .downcast::<PyArray1<usize>>()?
-                .as_slice()?
-                .to_vec()
-        };
-
-        let indices = unsafe {
-            value
-                .getattr("indices")?
-                .downcast::<PyArray1<usize>>()?
-                .as_slice()?
-                .to_vec()
-        };
-
-        let data = unsafe {
-            value
-                .getattr("data")?
-                .downcast::<PyArray1<f64>>()?
-                .as_slice()?
-                .to_vec()
-        };
-
-        // Calculate matrix dimensions
-        let nrows = indptr
-            .len()
-            .checked_sub(1)
-            .ok_or(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Empty indptr array",
-            ))?;
-
-        let ncols = indices.iter().max().map(|&m| m + 1).unwrap_or(0);
-
-        // Build CSR matrix
-        let csr = CsrMatrix::try_from_csr_data(nrows, ncols, indptr, indices, data)
-            .map_err(|_| PyErr::new::<pyo3::exceptions::PyValueError, _>("CSR error"))?;
-
-        result.insert(key.extract::<usize>()?, csr);
+struct SparseMatrix<T> {
+    csc: CscMatrix<T>,
+    csr: CsrMatrix<T>,
+}
+impl SparseMatrix<f64> {
+    fn new(coo: &CooMatrix<f64>) -> Self {
+        let csc: CscMatrix<f64> = CscMatrix::from(coo);
+        let csr: CsrMatrix<f64> = CsrMatrix::from(coo);
+        SparseMatrix { csc, csr }
     }
+}
 
+fn process_sparse_dict(dict: &PyDict) -> PyResult<HashMap<usize, SparseMatrix<f64>>> {
+    let mut result = HashMap::new();
+    for (key, value) in dict.iter() {
+        let key: usize = key.extract()?;
+        let n_rows: usize = value.getattr("n_rows")?.extract()?;
+        let n_cols: usize = value.getattr("n_rows")?.extract()?;
+
+        let cols_pyarray: &PyArray1<usize> = value.getattr("cols")?.downcast()?;
+        let cols_readonly = cols_pyarray.readonly();
+        let cols = cols_readonly.as_slice()?;
+
+        let rows_pyarray: &PyArray1<usize> = value.getattr("rows")?.downcast()?;
+        let rows_readonly = rows_pyarray.readonly();
+        let rows: &[usize] = rows_readonly.as_slice()?;
+
+        let data: &PyArray1<f64> = value.getattr("data")?.downcast()?;
+        let data_readonly = data.readonly();
+        let data: &[f64] = data_readonly.as_slice()?;
+
+        let triplet_iter = rows
+            .iter()
+            .zip(cols.iter())
+            .zip(data.iter())
+            .map(|((&r, &c), &v)| (r, c, v));
+
+        let coo = nalgebra_sparse::CooMatrix::try_from_triplets_iter(n_rows, n_cols, triplet_iter)
+            .unwrap();
+
+        result.insert(key, SparseMatrix::new(&coo));
+    }
     Ok(result)
 }
 
-fn up_degree(boundary_map_qp1: &CsrMatrix<f64>) -> CsrMatrix<f64> {
-    // start with a zero matrix. Dimensions of codomain in boundary map out of q+1 simplices
-    let domain_dimension = boundary_map_qp1.nrows();
-
-    // Degree computation
-    // for each q-simplex i (think vertex), look at each q+1 simplex j (think edge) containing it
-    // j contains i iff boundary_map_qp1(i, j) != 0
-    // So the number of nonzero entries in the ith row is what we want. This is easy using row_offsets
-    let row_offsets = boundary_map_qp1.row_offsets();
-    let mut degrees = Vec::with_capacity(domain_dimension);
-    for i in 0..domain_dimension {
-        degrees.push((row_offsets[i + 1] - row_offsets[i]) as f64);
-    }
-    let mut indptr = Vec::with_capacity(domain_dimension + 1);
-    let mut indices = Vec::with_capacity(domain_dimension);
-    indptr.push(0);
-    for (i, _) in degrees.iter().enumerate() {
-        indptr.push(i + 1);
-        indices.push(i);
-    }
-    let degree_matrix =
-        CsrMatrix::try_from_csr_data(domain_dimension, domain_dimension, indptr, indices, degrees)
-            .expect("Failed to construct degree matrix: invalid CSR parameters");
-
-    return degree_matrix;
-}
-
-fn up_adjacency(boundary_map_qp1: &CsrMatrix<f64>) -> CsrMatrix<f64> {
-    // For each (q+1) simplex l look at all its q simplices
-    // For each pair (i, j) of q simplices of the q+1 simplex
-    // boundary_map_qp1(i, l) says if l contains i, with +-1.
-    // boundary_map_qp1(j, l) says if l contains j, with +-1.
-    let n = boundary_map_qp1.nrows();
-    let mut adjacency = HashMap::new();
+fn column_map(matrix: &CsrMatrix<f64>) -> HashMap<usize, Vec<(usize, f64)>> {
     let mut column_map = HashMap::new();
-    for row in 0..boundary_map_qp1.nrows() {
-        let row_slice = boundary_map_qp1.get_row(row).unwrap();
+    for row in 0..matrix.nrows() {
+        let row_slice = matrix.get_row(row).unwrap();
         for (&col, &val) in row_slice.col_indices().iter().zip(row_slice.values()) {
             column_map
                 .entry(col)
@@ -120,45 +84,142 @@ fn up_adjacency(boundary_map_qp1: &CsrMatrix<f64>) -> CsrMatrix<f64> {
                 .push((row, val));
         }
     }
+    column_map
+}
 
-    // column_map has, for each q+1 simplex j, a vector (i, B(i, j)) for the i indices for which B(i, j) is nonzero
-    // for each q+1 simplex we look at this vector.
-    // for each entry pair (row_i, val_i), (row_j, val_j) we
-    for (_, entries) in column_map {
-        let entry_count = entries.len();
-        for i in 0..entry_count {
-            let (row_i, val_i) = entries[i];
-            for j in (i + 1)..entry_count {
-                let (row_j, val_j) = entries[j];
-                let product = -1.0 * val_i * val_j;
+fn up_degree(boundary_map_qp1: &SparseMatrix<f64>) -> SparseMatrix<f64> {
+    // start with a zero matrix. Dimensions of codomain in boundary map out of q+1 simplices
+    let csr = &boundary_map_qp1.csr;
+    let domain_dimension = csr.nrows();
 
-                // Update adjacency matrix entries
-                adjacency.insert((row_i, row_j), product);
-                adjacency.insert((row_j, row_i), product);
+    // Degree computation
+    // for each q-simplex i (think vertex), look at each q+1 simplex j (think edge) containing it
+    // j contains i iff boundary_map_qp1(i, j) != 0
+    // So the number of nonzero entries in the ith row is what we want. This is easy using row_offsets
+    let row_offsets = csr.row_offsets();
+    let mut degrees = Vec::with_capacity(domain_dimension);
+    let mut rows = Vec::with_capacity(domain_dimension);
+    let mut cols = Vec::with_capacity(domain_dimension);
+    for i in 0..domain_dimension {
+        degrees.push((row_offsets[i + 1] - row_offsets[i]) as f64);
+        rows.push(i);
+        cols.push(i);
+    }
+    let coo = CooMatrix::try_from_triplets(domain_dimension, domain_dimension, rows, cols, degrees)
+        .unwrap();
+    return SparseMatrix::new(&coo);
+}
+
+fn up_adjacency(boundary_map_qp1: &SparseMatrix<f64>) -> SparseMatrix<f64> {
+    // For each (q+1) simplex l look at all its q simplices
+    // For each pair (i, j) of q simplices of the q+1 simplex
+    // boundary_map_qp1(i, l) says if l contains i, with +-1.
+    // boundary_map_qp1(j, l) says if l contains j, with +-1.
+
+    // boundary map data
+    let csc = &boundary_map_qp1.csc;
+
+    // new matrix data
+    let mut new_rows = vec![];
+    let mut new_cols = vec![];
+    let mut new_data = vec![];
+
+    for col in csc.col_iter() {
+        let col_rows = col.row_indices();
+        let col_values = col.values();
+        for i_ind in 0..col_rows.len() {
+            // The global row index i
+            for j_ind in (i_ind + 1)..col_rows.len() {
+                let val = -col_values[i_ind] * col_values[j_ind];
+                new_rows.push(col_rows[i_ind]);
+                new_cols.push(col_rows[j_ind]);
+                new_data.push(val);
+
+                new_rows.push(col_rows[j_ind]);
+                new_cols.push(col_rows[i_ind]);
+                new_data.push(val);
             }
         }
     }
 
-    let mut coo = CooMatrix::new(n, n);
-    for ((i, j), val) in adjacency {
-        coo.push(i, j, val);
+    let nrows = csc.nrows();
+    let coo = CooMatrix::try_from_triplets(nrows, nrows, new_rows, new_cols, new_data).unwrap();
+    SparseMatrix::new(&coo)
+}
+
+fn down_degree(boundary_map_q: &SparseMatrix<f64>) -> SparseMatrix<f64> {
+    let csc = &boundary_map_q.csc;
+    let domain_dim = csc.ncols();
+    let mut degrees: Vec<f64> = Vec::zeros(domain_dim);
+    let rows: Vec<usize> = (0..domain_dim).collect();
+    let cols: Vec<usize> = (0..domain_dim).collect();
+
+    for (l, col) in csc.col_iter().enumerate() {
+        let row_indices = col.row_indices();
+        degrees[l] += row_indices.len() as f64;
     }
-
-    CsrMatrix::from(&coo)
+    let coo = CooMatrix::try_from_triplets(domain_dim, domain_dim, rows, cols, degrees).unwrap();
+    SparseMatrix::new(&coo)
 }
 
-fn up_laplacian(boundary_map_qp1: &CsrMatrix<f64>) -> CsrMatrix<f64> {
+fn down_adjacency(boundary_map_q: &SparseMatrix<f64>) -> SparseMatrix<f64> {
+    // For each pair of q simplices (i, j), if they have no common q-1 simplex (face)
+    // then A(i, j) = 0. If they have a common q-1 simplex l, then A(i, j) = - B(i, l) * B(j, l).
+    // q simplices -> q-1 simplices, so q simplices are columns, q-1 simplices are rows
+    let csc = &boundary_map_q.csc;
+
+    let mut new_data = vec![];
+    let mut new_cols = vec![];
+    let mut new_rows = vec![];
+
+    let ncols = csc.ncols();
+    for i in 0..ncols {
+        let ith_col = csc.col(i);
+        let ith_values = ith_col.values();
+        let ith_rows = ith_col.row_indices();
+        for j in (i + 1)..ncols {
+            let jth_col = csc.col(j);
+            let jth_values = jth_col.values();
+            let jth_rows = jth_col.row_indices();
+            // Two pointer intersection
+            let (mut p, mut q) = (0, 0);
+            while p < ith_col.nnz() && q < jth_col.nnz() {
+                match ith_rows[p].cmp(&jth_rows[q]) {
+                    Ordering::Equal => break,
+                    Ordering::Less => p += 1,
+                    Ordering::Greater => q += 1,
+                }
+            }
+            if p < ith_col.nnz() && q < jth_col.nnz() {
+                let prod = -ith_values[p] * jth_values[q];
+                new_data.push(prod);
+                new_cols.push(j);
+                new_rows.push(i);
+
+                new_data.push(prod);
+                new_cols.push(i);
+                new_rows.push(j);
+            }
+        }
+    }
+    let domain_dim = csc.ncols();
+    let coo =
+        CooMatrix::try_from_triplets(domain_dim, domain_dim, new_rows, new_cols, new_data).unwrap();
+    SparseMatrix::new(&coo)
+}
+
+fn up_laplacian(boundary_map_qp1: &SparseMatrix<f64>) -> CsrMatrix<f64> {
     let degree_matrix = up_degree(boundary_map_qp1);
+    println!("Degree matrix {:?}", degree_matrix.csr);
     let adjacency_matrix = up_adjacency(boundary_map_qp1);
-    degree_matrix - adjacency_matrix
+    println!("Adjacency matrix {:?}", adjacency_matrix.csr);
+    degree_matrix.csr - adjacency_matrix.csr
 }
 
-fn down_laplacian(
-    boundary_map: CsrMatrix<f64>,
-    domain_index: usize,
-    codomain_index: usize,
-) -> CsrMatrix<f64> {
-    todo!()
+fn down_laplacian(boundary_map_q: &SparseMatrix<f64>) -> CsrMatrix<f64> {
+    let degree_matrix = down_degree(boundary_map_q);
+    let adjacency_matrix = down_adjacency(boundary_map_q);
+    return degree_matrix.csr - adjacency_matrix.csr;
 }
 
 #[pyfunction]
@@ -198,8 +259,8 @@ mod tests {
         coo_boundary.push(1, 1, -1.0);
         coo_boundary.push(2, 1, 1.0);
         coo_boundary.push(2, 2, 1.0);
-        let boundary_map_csr = CsrMatrix::from(&coo_boundary);
-        let lap = up_laplacian(&boundary_map_csr);
+        let boundary_map = SparseMatrix::new(&coo_boundary);
+        let lap = up_laplacian(&boundary_map);
 
         // Expected up Laplacian (degree - adjacency):
         // [ 2  -1  -1 ]
@@ -226,8 +287,8 @@ mod tests {
         coo_boundary.push(0, 0, 1.0);
         coo_boundary.push(1, 0, 1.0);
         coo_boundary.push(2, 0, -1.0);
-        let boundary_map_csr = CsrMatrix::from(&coo_boundary);
-        let lap = up_laplacian(&boundary_map_csr);
+        let boundary_map = SparseMatrix::new(&coo_boundary);
+        let lap = up_laplacian(&boundary_map);
 
         // Expected up Laplacian (degree - adjacency):
         // 1 1 -1
@@ -243,6 +304,63 @@ mod tests {
         expected_data_coo.push(2, 0, -1.0);
         expected_data_coo.push(2, 1, -1.0);
         expected_data_coo.push(2, 2, 1.0);
+        let expected_data = CsrMatrix::from(&expected_data_coo);
+        assert_eq!(expected_data, lap)
+    }
+
+    #[test]
+    fn test_down_laplacian_2simplex() {
+        let mut coo_boundary = CooMatrix::new(3, 1);
+        // We can add elements in any order. For clarity, we do so in row-major order here.
+        coo_boundary.push(0, 0, 1.0);
+        coo_boundary.push(1, 0, 1.0);
+        coo_boundary.push(2, 0, -1.0);
+        let boundary_map = SparseMatrix::new(&coo_boundary);
+        let lap = down_laplacian(&boundary_map);
+
+        // Expected down Laplacian (degree - adjacency):
+        let mut expected_data_coo = CooMatrix::new(1, 1);
+        expected_data_coo.push(0, 0, 3.0);
+        let expected_data = CsrMatrix::from(&expected_data_coo);
+        assert_eq!(expected_data, lap)
+    }
+
+    #[test]
+    fn test_down_laplacian_triangle() {
+        // Boundary map d1 (edges -> vertices)
+        // 3 vertices (rows), 2 edges (columns)
+        // Edge 0: Vertex 0 -> 1
+        // Edge 1: Vertex 1 -> 2
+        // Edge 2: Vertex 0 -> 2
+        // 01 12 02
+        // 0       -1   0. -1
+        // 1       1. -1.  0
+        // 2      0.   1.  1
+        let mut coo_boundary = CooMatrix::new(3, 3);
+        // We can add elements in any order. For clarity, we do so in row-major order here.
+        coo_boundary.push(0, 0, -1.0);
+        coo_boundary.push(0, 2, -1.0);
+        coo_boundary.push(1, 0, 1.0);
+        coo_boundary.push(1, 1, -1.0);
+        coo_boundary.push(2, 1, 1.0);
+        coo_boundary.push(2, 2, 1.0);
+        let boundary_map = SparseMatrix::new(&coo_boundary);
+        let lap = down_laplacian(&boundary_map);
+
+        // Expected down Laplacian (degree - adjacency):
+        // [ 2  -1  1 ]
+        // [-1  2  1 ]
+        // [ 1  1  2 ]
+        let mut expected_data_coo = CooMatrix::new(3, 3);
+        expected_data_coo.push(0, 0, 2.0);
+        expected_data_coo.push(0, 1, -1.0);
+        expected_data_coo.push(0, 2, 1.0);
+        expected_data_coo.push(1, 0, -1.0);
+        expected_data_coo.push(1, 1, 2.0);
+        expected_data_coo.push(1, 2, 1.0);
+        expected_data_coo.push(2, 0, 1.0);
+        expected_data_coo.push(2, 1, 1.0);
+        expected_data_coo.push(2, 2, 2.0);
         let expected_data = CsrMatrix::from(&expected_data_coo);
         assert_eq!(expected_data, lap)
     }
