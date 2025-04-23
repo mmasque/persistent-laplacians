@@ -1,10 +1,9 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::ops::Add;
 
 use nalgebra_sparse::csr::CsrMatrix;
 use nalgebra_sparse::{CooMatrix, CscMatrix};
-use numpy::{PyArray1, PyReadonlyArray2};
+use numpy::PyArray1;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use sprs::DenseVector;
@@ -103,20 +102,6 @@ fn process_sparse_dict(dict: &PyDict) -> PyResult<HashMap<usize, SparseMatrix<f6
         result.insert(key, SparseMatrix::from(coo));
     }
     Ok(result)
-}
-
-fn column_map(matrix: &CsrMatrix<f64>) -> HashMap<usize, Vec<(usize, f64)>> {
-    let mut column_map = HashMap::new();
-    for row in 0..matrix.nrows() {
-        let row_slice = matrix.get_row(row).unwrap();
-        for (&col, &val) in row_slice.col_indices().iter().zip(row_slice.values()) {
-            column_map
-                .entry(col)
-                .or_insert_with(Vec::new)
-                .push((row, val));
-        }
-    }
-    column_map
 }
 
 fn up_degree(boundary_map_qp1: &SparseMatrix<f64>) -> SparseMatrix<f64> {
