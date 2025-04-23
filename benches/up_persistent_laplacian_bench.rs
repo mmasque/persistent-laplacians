@@ -18,11 +18,10 @@ fn generate_large_sparse_matrix(n: usize, nnz: usize) -> SparseMatrix<f64> {
 }
 
 fn bench_up_persistent_laplacian(c: &mut Criterion) {
-    // Benchmarking increasing sizes for n = nnz
     let sizes = vec![100, 200, 300, 400, 500, 1000];
 
     for &n in &sizes {
-        let matrix = generate_large_sparse_matrix(n, 2 * n); // n = nnz
+        let matrix = generate_large_sparse_matrix(n, 2 * n);
 
         c.bench_function(&format!("up_persistent_laplacian n={}", n), |b| {
             b.iter(|| {
