@@ -29,7 +29,7 @@ fn parse_nested_dict(filt: &PyDict) -> PyResult<HashMap<usize, HashMap<usize, us
 }
 
 // Sometimes you want them all
-struct SparseMatrix<T> {
+pub struct SparseMatrix<T> {
     csc: CscMatrix<T>,
     csr: CsrMatrix<T>,
     coo: CooMatrix<T>,
@@ -225,18 +225,16 @@ fn down_adjacency(boundary_map_q: &SparseMatrix<f64>) -> SparseMatrix<f64> {
     SparseMatrix::from(coo)
 }
 
-fn up_laplacian(boundary_map_qp1: &SparseMatrix<f64>) -> CsrMatrix<f64> {
+fn up_laplacian(boundary_map_qp1: &SparseMatrix<f64>) -> SparseMatrix<f64> {
     let degree_matrix = up_degree(boundary_map_qp1);
-    println!("Degree matrix {:?}", degree_matrix.csr);
     let adjacency_matrix = up_adjacency(boundary_map_qp1);
-    println!("Adjacency matrix {:?}", adjacency_matrix.csr);
-    degree_matrix.csr - adjacency_matrix.csr
+    (degree_matrix.csr - adjacency_matrix.csr).into()
 }
 
-fn down_laplacian(boundary_map_q: &SparseMatrix<f64>) -> CsrMatrix<f64> {
+fn down_laplacian(boundary_map_q: &SparseMatrix<f64>) -> SparseMatrix<f64> {
     let degree_matrix = down_degree(boundary_map_q);
     let adjacency_matrix = down_adjacency(boundary_map_q);
-    return degree_matrix.csr - adjacency_matrix.csr;
+    (degree_matrix.csr - adjacency_matrix.csr).into()
 }
 
 // Implementation of Theorem 5.1 in Memoli, equation 15.
@@ -254,7 +252,6 @@ fn up_persistent_laplacian_step(
     if let Some(bottom_right) = csc.get_entry(new_dim, new_dim) {
         // prev(i, j) - prev(i, dim_prev) * prev(dim_prev, j) / prev(dim_prev, dim_prev)
         let bottom_right_value = bottom_right.into_value();
-        println!("Bottom right: {}", bottom_right_value);
         let outer_coo = outer_product_last_col_row(&prev_up_persistent_laplacian);
         let outer_weighed = CsrMatrix::from(&outer_coo) / bottom_right_value;
         let exclude_last_row_col_coo = drop_last_row_col_coo(&coo);
@@ -279,11 +276,11 @@ fn up_persistent_laplacian_step(
 }
 
 // Implementation of Theorem 5.1 algorithm in Memoli: https://arxiv.org/pdf/2012.02808
-fn up_persistent_laplacian(
-    boundary_map_qp1: SparseMatrix<f64>,
+pub fn up_persistent_laplacian(
+    boundary_map_qp1: &SparseMatrix<f64>,
     lower_dim_by: usize,
 ) -> Option<SparseMatrix<f64>> {
-    let mut current_laplacian = Some(boundary_map_qp1);
+    let mut current_laplacian = Some(up_laplacian(&boundary_map_qp1));
     for _ in 0..lower_dim_by {
         let next_laplacian = current_laplacian.and_then(|l| up_persistent_laplacian_step(&l));
         current_laplacian = next_laplacian;
@@ -388,8 +385,7 @@ mod tests {
         expected_data_coo.push(2, 0, -1.0);
         expected_data_coo.push(2, 1, -1.0);
         expected_data_coo.push(2, 2, 2.0);
-        let expected_data = CsrMatrix::from(&expected_data_coo);
-        assert_eq!(expected_data, lap)
+        assert_eq!(expected_data_coo, lap.coo)
     }
 
     #[test]
@@ -415,8 +411,7 @@ mod tests {
         expected_data_coo.push(2, 0, -1.0);
         expected_data_coo.push(2, 1, -1.0);
         expected_data_coo.push(2, 2, 1.0);
-        let expected_data = CsrMatrix::from(&expected_data_coo);
-        assert_eq!(expected_data, lap)
+        assert_eq!(expected_data_coo, lap.coo)
     }
 
     #[test]
@@ -431,8 +426,7 @@ mod tests {
         // Expected down Laplacian (degree - adjacency):
         let mut expected_data_coo = CooMatrix::new(1, 1);
         expected_data_coo.push(0, 0, 3.0);
-        let expected_data = CsrMatrix::from(&expected_data_coo);
-        assert_eq!(expected_data, lap)
+        assert_eq!(expected_data_coo, lap.coo)
     }
 
     #[test]
@@ -470,8 +464,7 @@ mod tests {
         expected_data_coo.push(2, 0, 1.0);
         expected_data_coo.push(2, 1, 1.0);
         expected_data_coo.push(2, 2, 2.0);
-        let expected_data = CsrMatrix::from(&expected_data_coo);
-        assert_eq!(expected_data, lap)
+        assert_eq!(expected_data_coo, lap.coo)
     }
 
     #[test]
