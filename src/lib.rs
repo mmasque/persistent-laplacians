@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::ops::Add;
 
 use nalgebra_sparse::csr::CsrMatrix;
 use nalgebra_sparse::{CooMatrix, CscMatrix};
@@ -28,15 +29,46 @@ fn parse_nested_dict(filt: &PyDict) -> PyResult<HashMap<usize, HashMap<usize, us
     Ok(filt_map)
 }
 
+// Sometimes you want them all
 struct SparseMatrix<T> {
     csc: CscMatrix<T>,
     csr: CsrMatrix<T>,
+    coo: CooMatrix<T>,
 }
-impl SparseMatrix<f64> {
-    fn new(coo: &CooMatrix<f64>) -> Self {
-        let csc: CscMatrix<f64> = CscMatrix::from(coo);
-        let csr: CsrMatrix<f64> = CsrMatrix::from(coo);
-        SparseMatrix { csc, csr }
+
+impl From<CscMatrix<f64>> for SparseMatrix<f64> {
+    fn from(value: CscMatrix<f64>) -> Self {
+        let csr = CsrMatrix::from(&value);
+        let coo = CooMatrix::from(&value);
+        SparseMatrix {
+            csc: value,
+            csr,
+            coo,
+        }
+    }
+}
+
+impl From<CsrMatrix<f64>> for SparseMatrix<f64> {
+    fn from(value: CsrMatrix<f64>) -> Self {
+        let csc = CscMatrix::from(&value);
+        let coo = CooMatrix::from(&value);
+        SparseMatrix {
+            csc,
+            csr: value,
+            coo,
+        }
+    }
+}
+
+impl From<CooMatrix<f64>> for SparseMatrix<f64> {
+    fn from(value: CooMatrix<f64>) -> Self {
+        let csc: CscMatrix<f64> = CscMatrix::from(&value);
+        let csr = CsrMatrix::from(&value);
+        SparseMatrix {
+            csc,
+            csr,
+            coo: value,
+        }
     }
 }
 
@@ -68,7 +100,7 @@ fn process_sparse_dict(dict: &PyDict) -> PyResult<HashMap<usize, SparseMatrix<f6
         let coo = nalgebra_sparse::CooMatrix::try_from_triplets_iter(n_rows, n_cols, triplet_iter)
             .unwrap();
 
-        result.insert(key, SparseMatrix::new(&coo));
+        result.insert(key, SparseMatrix::from(coo));
     }
     Ok(result)
 }
@@ -107,7 +139,7 @@ fn up_degree(boundary_map_qp1: &SparseMatrix<f64>) -> SparseMatrix<f64> {
     }
     let coo = CooMatrix::try_from_triplets(domain_dimension, domain_dimension, rows, cols, degrees)
         .unwrap();
-    return SparseMatrix::new(&coo);
+    return SparseMatrix::from(coo);
 }
 
 fn up_adjacency(boundary_map_qp1: &SparseMatrix<f64>) -> SparseMatrix<f64> {
@@ -144,7 +176,7 @@ fn up_adjacency(boundary_map_qp1: &SparseMatrix<f64>) -> SparseMatrix<f64> {
 
     let nrows = csc.nrows();
     let coo = CooMatrix::try_from_triplets(nrows, nrows, new_rows, new_cols, new_data).unwrap();
-    SparseMatrix::new(&coo)
+    SparseMatrix::from(coo)
 }
 
 fn down_degree(boundary_map_q: &SparseMatrix<f64>) -> SparseMatrix<f64> {
@@ -159,7 +191,7 @@ fn down_degree(boundary_map_q: &SparseMatrix<f64>) -> SparseMatrix<f64> {
         degrees[l] += row_indices.len() as f64;
     }
     let coo = CooMatrix::try_from_triplets(domain_dim, domain_dim, rows, cols, degrees).unwrap();
-    SparseMatrix::new(&coo)
+    SparseMatrix::from(coo)
 }
 
 fn down_adjacency(boundary_map_q: &SparseMatrix<f64>) -> SparseMatrix<f64> {
@@ -205,7 +237,7 @@ fn down_adjacency(boundary_map_q: &SparseMatrix<f64>) -> SparseMatrix<f64> {
     let domain_dim = csc.ncols();
     let coo =
         CooMatrix::try_from_triplets(domain_dim, domain_dim, new_rows, new_cols, new_data).unwrap();
-    SparseMatrix::new(&coo)
+    SparseMatrix::from(coo)
 }
 
 fn up_laplacian(boundary_map_qp1: &SparseMatrix<f64>) -> CsrMatrix<f64> {
@@ -222,6 +254,58 @@ fn down_laplacian(boundary_map_q: &SparseMatrix<f64>) -> CsrMatrix<f64> {
     return degree_matrix.csr - adjacency_matrix.csr;
 }
 
+// Implementation of Theorem 5.1 in Memoli, equation 15.
+fn up_persistent_laplacian_step(
+    prev_up_persistent_laplacian: &SparseMatrix<f64>,
+) -> Option<SparseMatrix<f64>> {
+    // If the bottom right entry is zero in our input matrix, then return the previous laplacian
+    // without the last row and column.
+    let csc = &prev_up_persistent_laplacian.csc;
+    let csr = &prev_up_persistent_laplacian.csr;
+    let coo = &prev_up_persistent_laplacian.coo;
+    let dim_prev = csc.ncols();
+    let new_dim = dim_prev.checked_sub(1)?;
+    // Note: if check incurs binary search cost, so log(dim_prev). But the computation inside is already linear.
+    if let Some(bottom_right) = csc.get_entry(new_dim, new_dim) {
+        // prev(i, j) - prev(i, dim_prev) * prev(dim_prev, j) / prev(dim_prev, dim_prev)
+        let bottom_right_value = bottom_right.into_value();
+        println!("Bottom right: {}", bottom_right_value);
+        let outer_coo = outer_product_last_col_row(&prev_up_persistent_laplacian);
+        let outer_weighed = CsrMatrix::from(&outer_coo) / bottom_right_value;
+        let exclude_last_row_col_coo = drop_last_row_col_coo(&coo);
+        let exclude_last_row_col = CsrMatrix::from(&exclude_last_row_col_coo);
+
+        return Some(SparseMatrix::from(exclude_last_row_col - outer_weighed));
+    } else {
+        let mut coo = CooMatrix::new(new_dim, new_dim);
+        for col in 0..(new_dim - 1) {
+            let col_view = csc.col_iter().nth(col).unwrap();
+            let rows = col_view.row_indices();
+            let vals = col_view.values();
+
+            for (&r, &v) in rows.iter().zip(vals.iter()) {
+                if r < new_dim - 1 {
+                    coo.push(r, col, v);
+                }
+            }
+        }
+        Some(SparseMatrix::from(coo))
+    }
+}
+
+// Implementation of Theorem 5.1 algorithm in Memoli: https://arxiv.org/pdf/2012.02808
+fn up_persistent_laplacian(
+    boundary_map_qp1: SparseMatrix<f64>,
+    lower_dim_by: usize,
+) -> Option<SparseMatrix<f64>> {
+    let mut current_laplacian = Some(boundary_map_qp1);
+    for _ in 0..lower_dim_by {
+        let next_laplacian = current_laplacian.and_then(|l| up_persistent_laplacian_step(&l));
+        current_laplacian = next_laplacian;
+    }
+    return current_laplacian;
+}
+
 #[pyfunction]
 fn process_tda(py: Python, boundary_maps: &PyDict, filt: &PyDict) -> PyResult<PyObject> {
     let sparse_boundary_maps = process_sparse_dict(boundary_maps).unwrap();
@@ -234,6 +318,50 @@ fn process_tda(py: Python, boundary_maps: &PyDict, filt: &PyDict) -> PyResult<Py
 fn persistent_laplacians(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(process_tda, m)?)?;
     Ok(())
+}
+
+/// Compute the product C[:n]R[:n] of the last column C by the last row R of an n x n matrix,
+/// without the last entry, so returning an (n-1) x (n-1) matrix
+fn outer_product_last_col_row(sparse: &SparseMatrix<f64>) -> CooMatrix<f64> {
+    let csc = &sparse.csc;
+    let csr = &sparse.csr;
+    let n = csc.ncols();
+    assert_eq!(n, csc.nrows());
+    assert_eq!(n, csr.ncols());
+    assert_eq!(n, csr.nrows());
+
+    let col = csc.col(n - 1);
+    let row = csr.row(n - 1);
+
+    let mut coo = CooMatrix::new(n - 1, n - 1);
+
+    for (&i, &v_col) in col.row_indices().iter().zip(col.values()) {
+        if i == n - 1 {
+            continue;
+        }
+        for (&j, &v_row) in row.col_indices().iter().zip(row.values()) {
+            if j == n - 1 {
+                continue;
+            }
+            coo.push(i, j, v_col * v_row);
+        }
+    }
+
+    coo
+}
+
+fn drop_last_row_col_coo(matrix: &CooMatrix<f64>) -> CooMatrix<f64> {
+    let nrows = matrix.nrows();
+    let ncols = matrix.ncols();
+    let mut new_coo = CooMatrix::new(nrows - 1, ncols - 1);
+
+    for (i, j, v) in matrix.triplet_iter() {
+        if i < nrows - 1 && j < ncols - 1 {
+            new_coo.push(i, j, *v);
+        }
+    }
+
+    new_coo
 }
 
 #[cfg(test)]
@@ -252,14 +380,13 @@ mod tests {
         // 1       1. -1.  0
         // 2      0.   1.  1
         let mut coo_boundary = CooMatrix::new(3, 3);
-        // We can add elements in any order. For clarity, we do so in row-major order here.
         coo_boundary.push(0, 0, -1.0);
         coo_boundary.push(0, 2, -1.0);
         coo_boundary.push(1, 0, 1.0);
         coo_boundary.push(1, 1, -1.0);
         coo_boundary.push(2, 1, 1.0);
         coo_boundary.push(2, 2, 1.0);
-        let boundary_map = SparseMatrix::new(&coo_boundary);
+        let boundary_map = SparseMatrix::from(coo_boundary);
         let lap = up_laplacian(&boundary_map);
 
         // Expected up Laplacian (degree - adjacency):
@@ -283,11 +410,10 @@ mod tests {
     #[test]
     fn test_up_laplacian_2simplex() {
         let mut coo_boundary = CooMatrix::new(3, 1);
-        // We can add elements in any order. For clarity, we do so in row-major order here.
         coo_boundary.push(0, 0, 1.0);
         coo_boundary.push(1, 0, 1.0);
         coo_boundary.push(2, 0, -1.0);
-        let boundary_map = SparseMatrix::new(&coo_boundary);
+        let boundary_map = SparseMatrix::from(coo_boundary);
         let lap = up_laplacian(&boundary_map);
 
         // Expected up Laplacian (degree - adjacency):
@@ -311,11 +437,10 @@ mod tests {
     #[test]
     fn test_down_laplacian_2simplex() {
         let mut coo_boundary = CooMatrix::new(3, 1);
-        // We can add elements in any order. For clarity, we do so in row-major order here.
         coo_boundary.push(0, 0, 1.0);
         coo_boundary.push(1, 0, 1.0);
         coo_boundary.push(2, 0, -1.0);
-        let boundary_map = SparseMatrix::new(&coo_boundary);
+        let boundary_map = SparseMatrix::from(coo_boundary);
         let lap = down_laplacian(&boundary_map);
 
         // Expected down Laplacian (degree - adjacency):
@@ -337,14 +462,13 @@ mod tests {
         // 1       1. -1.  0
         // 2      0.   1.  1
         let mut coo_boundary = CooMatrix::new(3, 3);
-        // We can add elements in any order. For clarity, we do so in row-major order here.
         coo_boundary.push(0, 0, -1.0);
         coo_boundary.push(0, 2, -1.0);
         coo_boundary.push(1, 0, 1.0);
         coo_boundary.push(1, 1, -1.0);
         coo_boundary.push(2, 1, 1.0);
         coo_boundary.push(2, 2, 1.0);
-        let boundary_map = SparseMatrix::new(&coo_boundary);
+        let boundary_map = SparseMatrix::from(coo_boundary);
         let lap = down_laplacian(&boundary_map);
 
         // Expected down Laplacian (degree - adjacency):
@@ -363,5 +487,77 @@ mod tests {
         expected_data_coo.push(2, 2, 2.0);
         let expected_data = CsrMatrix::from(&expected_data_coo);
         assert_eq!(expected_data, lap)
+    }
+
+    #[test]
+    fn test_up_persistent_laplacian_step_triangle() {
+        let mut coo_boundary = CooMatrix::new(3, 3);
+        coo_boundary.push(0, 0, -1.0);
+        coo_boundary.push(0, 2, -1.0);
+        coo_boundary.push(1, 0, 1.0);
+        coo_boundary.push(1, 1, -1.0);
+        coo_boundary.push(2, 1, 1.0);
+        coo_boundary.push(2, 2, 1.0);
+        let boundary_map = SparseMatrix::from(coo_boundary);
+        // Boundary map d1 (edges -> vertices)
+        // 3 vertices (rows), 2 edges (columns)
+        // Edge 0: Vertex 0 -> 1
+        // Edge 1: Vertex 1 -> 2
+        // Edge 2: Vertex 0 -> 2
+        // 01 12 02
+        // 0       -1   0. -1
+        // 1       1. -1.  0
+        // 2      0.   1.  1
+        // persistence in the last step in an imagined filtration, where there is one fewer 1-simplex (edge)
+        let up_laplacian = up_laplacian(&boundary_map);
+        let persistent_up = up_persistent_laplacian_step(&up_laplacian.into()).unwrap();
+        let mut expected = CooMatrix::new(2, 2);
+        expected.push(0, 0, 1.5);
+        expected.push(0, 1, -1.5);
+        expected.push(1, 0, -1.5);
+        expected.push(1, 1, 1.5);
+        assert_eq!(expected, persistent_up.coo)
+    }
+
+    // https://arxiv.org/abs/2312.07563 Example 3.4
+    #[test]
+    fn test_up_persistent_laplacian_step_example_3_4() {
+        let mut coo_boundary = CooMatrix::new(5, 2);
+        coo_boundary.push(0, 0, 1.0);
+        coo_boundary.push(1, 0, 1.0);
+        coo_boundary.push(4, 0, -1.0);
+
+        coo_boundary.push(2, 1, 1.0);
+        coo_boundary.push(3, 1, -1.0);
+        coo_boundary.push(4, 1, 1.0);
+        let boundary = coo_boundary.into();
+        let up_laplacian = up_laplacian(&boundary).into();
+        let up_persistent_laplacian = up_persistent_laplacian_step(&up_laplacian).unwrap();
+
+        let mut expected = CooMatrix::new(4, 4);
+        expected.push(0, 0, 1.0);
+        expected.push(0, 1, 1.0);
+        expected.push(0, 2, 1.0);
+        expected.push(0, 3, -1.0);
+
+        expected.push(1, 0, 1.0);
+        expected.push(1, 1, 1.0);
+        expected.push(1, 2, 1.0);
+        expected.push(1, 3, -1.0);
+
+        expected.push(2, 0, 1.0);
+        expected.push(2, 1, 1.0);
+        expected.push(2, 2, 1.0);
+        expected.push(2, 3, -1.0);
+
+        expected.push(3, 0, -1.0);
+        expected.push(3, 1, -1.0);
+        expected.push(3, 2, -1.0);
+        expected.push(3, 3, 1.0);
+
+        assert_eq!(
+            0.5 * CsrMatrix::from(&expected),
+            up_persistent_laplacian.csr
+        );
     }
 }
