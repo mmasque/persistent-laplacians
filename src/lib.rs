@@ -6,33 +6,12 @@ use numpy::PyArray1;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use sprs::DenseVector;
-use std::array::IntoIter;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
 // Temporary before I find a better solution.
 fn is_float_zero(float: f64) -> bool {
     float < 1e-4
-}
-
-fn parse_nested_dict(filt: &PyDict) -> PyResult<HashMap<usize, HashMap<usize, usize>>> {
-    let mut filt_map = HashMap::with_capacity(filt.len());
-
-    for (k_obj, sub_obj) in filt.iter() {
-        let t: usize = k_obj.extract()?;
-        let sub_dict: &PyDict = sub_obj.downcast::<PyDict>()?;
-        let mut inner_map = HashMap::with_capacity(sub_dict.len());
-
-        for (dim_obj, idx_obj) in sub_dict.iter() {
-            let dim: usize = dim_obj.extract()?;
-            let idx: usize = idx_obj.extract()?;
-            inner_map.insert(dim, idx);
-        }
-
-        filt_map.insert(t, inner_map);
-    }
-
-    Ok(filt_map)
 }
 
 // Sometimes you want them all
@@ -78,22 +57,42 @@ impl From<CooMatrix<f64>> for SparseMatrix<f64> {
     }
 }
 
+fn parse_nested_dict(filt: &PyDict) -> PyResult<HashMap<usize, HashMap<usize, usize>>> {
+    let mut filt_map = HashMap::with_capacity(filt.len());
+
+    for (k_obj, sub_obj) in filt.iter() {
+        let t: usize = k_obj.extract()?;
+        let sub_dict: &PyDict = sub_obj.downcast::<PyDict>()?;
+        let mut inner_map = HashMap::with_capacity(sub_dict.len());
+
+        for (dim_obj, idx_obj) in sub_dict.iter() {
+            let dim: usize = dim_obj.extract()?;
+            let idx: usize = idx_obj.extract()?;
+            inner_map.insert(dim, idx);
+        }
+
+        filt_map.insert(t, inner_map);
+    }
+
+    Ok(filt_map)
+}
+
 fn process_sparse_dict(dict: &PyDict) -> PyResult<HashMap<usize, SparseMatrix<f64>>> {
     let mut result = HashMap::new();
     for (key, value) in dict.iter() {
         let key: usize = key.extract()?;
-        let n_rows: usize = value.getattr("n_rows")?.extract()?;
-        let n_cols: usize = value.getattr("n_rows")?.extract()?;
+        let n_rows: usize = value.get_item("n_rows")?.extract()?;
+        let n_cols: usize = value.get_item("n_cols")?.extract()?;
 
-        let cols_pyarray: &PyArray1<usize> = value.getattr("cols")?.downcast()?;
+        let cols_pyarray: &PyArray1<i64> = value.get_item("cols")?.downcast()?;
         let cols_readonly = cols_pyarray.readonly();
         let cols = cols_readonly.as_slice()?;
 
-        let rows_pyarray: &PyArray1<usize> = value.getattr("rows")?.downcast()?;
+        let rows_pyarray: &PyArray1<i64> = value.get_item("rows")?.downcast()?;
         let rows_readonly = rows_pyarray.readonly();
-        let rows: &[usize] = rows_readonly.as_slice()?;
+        let rows = rows_readonly.as_slice()?;
 
-        let data: &PyArray1<f64> = value.getattr("data")?.downcast()?;
+        let data: &PyArray1<f64> = value.get_item("data")?.downcast()?;
         let data_readonly = data.readonly();
         let data: &[f64] = data_readonly.as_slice()?;
 
@@ -101,7 +100,7 @@ fn process_sparse_dict(dict: &PyDict) -> PyResult<HashMap<usize, SparseMatrix<f6
             .iter()
             .zip(cols.iter())
             .zip(data.iter())
-            .map(|((&r, &c), &v)| (r, c, v));
+            .map(|((&r, &c), &v)| (r.try_into().unwrap(), c.try_into().unwrap(), v));
 
         let coo = nalgebra_sparse::CooMatrix::try_from_triplets_iter(n_rows, n_cols, triplet_iter)
             .unwrap();
@@ -367,12 +366,25 @@ pub fn eigen_persistent_laplacian(
     Some(eigen)
 }
 
+pub fn persistent_laplacians_of_filtration(
+    sparse_boundary_maps: HashMap<usize, SparseMatrix<f64>>,
+    filt_hash: HashMap<usize, HashMap<usize, usize>>,
+) {
+    // For now, do the iterations naively.
+    let mut ordered_filtrations: Vec<_> = filt_hash.iter().collect::<Vec<_>>();
+    ordered_filtrations.sort_by(|a, b| a.0.cmp(&b.0).reverse());
+    for (filtration_index, dimension_hashmap) in ordered_filtrations {
+        println!("Filtration index: {}", filtration_index)
+        // dimension hashmap: q: dim of q at filtration indices
+    }
+}
+
 #[pyfunction]
 fn process_tda(py: Python, boundary_maps: &PyDict, filt: &PyDict) -> PyResult<PyObject> {
     let sparse_boundary_maps = process_sparse_dict(boundary_maps).unwrap();
 
     let filt_hash = parse_nested_dict(&filt).unwrap();
-
+    persistent_laplacians_of_filtration(sparse_boundary_maps, filt_hash);
     Ok(0.into_py(py))
 }
 
