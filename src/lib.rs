@@ -1,12 +1,19 @@
-use std::cmp::Ordering;
-use std::collections::HashMap;
-
+use lanczos::{Hermitian, HermitianEigen, Order};
+use nalgebra::DVector;
 use nalgebra_sparse::csr::CsrMatrix;
 use nalgebra_sparse::{CooMatrix, CscMatrix};
 use numpy::PyArray1;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use sprs::DenseVector;
+use std::array::IntoIter;
+use std::cmp::Ordering;
+use std::collections::HashMap;
+
+// Temporary before I find a better solution.
+fn is_float_zero(float: f64) -> bool {
+    float < 1e-4
+}
 
 fn parse_nested_dict(filt: &PyDict) -> PyResult<HashMap<usize, HashMap<usize, usize>>> {
     let mut filt_map = HashMap::with_capacity(filt.len());
@@ -239,19 +246,24 @@ fn down_laplacian(boundary_map_q: &SparseMatrix<f64>) -> SparseMatrix<f64> {
 
 // Implementation of Theorem 5.1 in Memoli, equation 15.
 fn up_persistent_laplacian_step(
-    prev_up_persistent_laplacian: &SparseMatrix<f64>,
+    prev_up_persistent_laplacian: SparseMatrix<f64>,
 ) -> Option<SparseMatrix<f64>> {
     // If the bottom right entry is zero in our input matrix, then return the previous laplacian
     // without the last row and column.
     let csc = &prev_up_persistent_laplacian.csc;
-    let csr = &prev_up_persistent_laplacian.csr;
     let coo = &prev_up_persistent_laplacian.coo;
     let dim_prev = csc.ncols();
     let new_dim = dim_prev.checked_sub(1)?;
     // Note: if check incurs binary search cost, so log(dim_prev). But the computation inside is already linear.
-    if let Some(bottom_right) = csc.get_entry(new_dim, new_dim) {
+    let bottom_right = csc.get_entry(new_dim, new_dim);
+    let (bottom_right_is_zero, bottom_right_value) = bottom_right
+        .map(|x| {
+            let value = x.into_value();
+            (is_float_zero(value), value)
+        })
+        .unwrap_or((true, 0.0));
+    if !bottom_right_is_zero {
         // prev(i, j) - prev(i, dim_prev) * prev(dim_prev, j) / prev(dim_prev, dim_prev)
-        let bottom_right_value = bottom_right.into_value();
         let outer_coo = outer_product_last_col_row(&prev_up_persistent_laplacian);
         let outer_weighed = CsrMatrix::from(&outer_coo) / bottom_right_value;
         let exclude_last_row_col_coo = drop_last_row_col_coo(&coo);
@@ -280,17 +292,85 @@ pub fn up_persistent_laplacian(
     boundary_map_qp1: &SparseMatrix<f64>,
     lower_dim_by: usize,
 ) -> Option<SparseMatrix<f64>> {
-    let mut current_laplacian = Some(up_laplacian(&boundary_map_qp1));
+    let mut current_laplacian = up_laplacian(&boundary_map_qp1);
     for _ in 0..lower_dim_by {
-        let next_laplacian = current_laplacian.and_then(|l| up_persistent_laplacian_step(&l));
+        let next_laplacian = up_persistent_laplacian_step(current_laplacian)?;
         current_laplacian = next_laplacian;
     }
-    return current_laplacian;
+    return Some(current_laplacian);
+}
+
+// Given the global boundary maps d_{q+1}: (q+1) -> q and d_q: q -> (q-1), need
+// the dimensions of K for d_{q+1} and d_q,
+// the dimensions of L for d_{q+1} and d_q.
+pub fn persistent_laplacian(
+    global_boundary_map_qp1: &SparseMatrix<f64>,
+    dims_qp1_smaller: (usize, usize),
+    dims_qp1_larger: (usize, usize),
+    global_boundary_map_q: &SparseMatrix<f64>,
+    dims_q_smaller: (usize, usize),
+) -> Option<SparseMatrix<f64>> {
+    let (rows_q_smaller, cols_q_smaller) = dims_q_smaller;
+    // Quite slow, since we are throwing away the csc and csr and remaking them
+    let boundary_map_q_smaller =
+        upper_submatrix(&global_boundary_map_q.coo, rows_q_smaller, cols_q_smaller).into();
+    let down_persistent_laplacian = down_laplacian(&boundary_map_q_smaller);
+    let (rows_qp1_larger, cols_qp1_larger) = dims_qp1_larger;
+    let (rows_qp1_smaller, _) = dims_qp1_smaller; // TODO: cols don't matter?
+    let boundary_map_qp1_larger: SparseMatrix<f64> = upper_submatrix(
+        &global_boundary_map_qp1.coo,
+        rows_qp1_larger,
+        cols_qp1_larger,
+    )
+    .into();
+    // rows_qp1_smaller is codomain of map (q+1) -> (q) of the smaller of the complexes.
+    // rows_qp1_larger is codomain of map (q+1) -> (q) of the larger of the complexes.
+    let lower_dim_by = rows_qp1_larger - rows_qp1_smaller;
+    let up_persistent_laplacian = up_persistent_laplacian(&boundary_map_qp1_larger, lower_dim_by)?;
+
+    Some((up_persistent_laplacian.csc + down_persistent_laplacian.csc).into())
+}
+
+// Via computation of _all_ eigenvalues and eigenvectors via Lanczos algorithm for sparse matrices.
+pub fn homology_dimension(
+    global_boundary_map_qp1: &SparseMatrix<f64>,
+    dims_qp1_smaller: (usize, usize),
+    dims_qp1_larger: (usize, usize),
+    global_boundary_map_q: &SparseMatrix<f64>,
+    dims_q_smaller: (usize, usize),
+) -> Option<usize> {
+    let eigen = eigen_persistent_laplacian(
+        global_boundary_map_qp1,
+        dims_qp1_smaller,
+        dims_qp1_larger,
+        global_boundary_map_q,
+        dims_q_smaller,
+    )?;
+    Some(count_zeros(eigen.eigenvalues, 1e-5))
+}
+
+pub fn eigen_persistent_laplacian(
+    global_boundary_map_qp1: &SparseMatrix<f64>,
+    dims_qp1_smaller: (usize, usize),
+    dims_qp1_larger: (usize, usize),
+    global_boundary_map_q: &SparseMatrix<f64>,
+    dims_q_smaller: (usize, usize),
+) -> Option<HermitianEigen<f64>> {
+    let persistent_laplacian = persistent_laplacian(
+        global_boundary_map_qp1,
+        dims_qp1_smaller,
+        dims_qp1_larger,
+        global_boundary_map_q,
+        dims_q_smaller,
+    )?;
+    let eigen = persistent_laplacian.csc.eigsh(50, Order::Smallest);
+    Some(eigen)
 }
 
 #[pyfunction]
 fn process_tda(py: Python, boundary_maps: &PyDict, filt: &PyDict) -> PyResult<PyObject> {
     let sparse_boundary_maps = process_sparse_dict(boundary_maps).unwrap();
+
     let filt_hash = parse_nested_dict(&filt).unwrap();
 
     Ok(0.into_py(py))
@@ -335,10 +415,19 @@ fn outer_product_last_col_row(sparse: &SparseMatrix<f64>) -> CooMatrix<f64> {
 fn drop_last_row_col_coo(matrix: &CooMatrix<f64>) -> CooMatrix<f64> {
     let nrows = matrix.nrows();
     let ncols = matrix.ncols();
-    let mut new_coo = CooMatrix::new(nrows - 1, ncols - 1);
+    upper_submatrix(matrix, nrows - 1, ncols - 1)
+}
+
+/// Take upper left submatrix
+/// rows and cols are the dimensions of the submatrix to take
+/// TODO: maybe take ownership, then early return when rows = nrows, cols = ncols
+fn upper_submatrix(matrix: &CooMatrix<f64>, rows: usize, cols: usize) -> CooMatrix<f64> {
+    let nrows = matrix.nrows();
+    let ncols = matrix.ncols();
+    let mut new_coo = CooMatrix::new(rows, cols);
 
     for (i, j, v) in matrix.triplet_iter() {
-        if i < nrows - 1 && j < ncols - 1 {
+        if i < rows && j < cols {
             new_coo.push(i, j, *v);
         }
     }
@@ -346,6 +435,9 @@ fn drop_last_row_col_coo(matrix: &CooMatrix<f64>) -> CooMatrix<f64> {
     new_coo
 }
 
+pub fn count_zeros(data: DVector<f64>, eps: f64) -> usize {
+    data.iter().filter(|&&x| x.abs() <= eps).count()
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,7 +580,7 @@ mod tests {
         // 2      0.   1.  1
         // persistence in the last step in an imagined filtration, where there is one fewer 1-simplex (edge)
         let up_laplacian = up_laplacian(&boundary_map);
-        let persistent_up = up_persistent_laplacian_step(&up_laplacian.into()).unwrap();
+        let persistent_up = up_persistent_laplacian_step(up_laplacian.into()).unwrap();
         let mut expected = CooMatrix::new(2, 2);
         expected.push(0, 0, 1.5);
         expected.push(0, 1, -1.5);
@@ -510,7 +602,7 @@ mod tests {
         coo_boundary.push(4, 1, 1.0);
         let boundary = coo_boundary.into();
         let up_laplacian = up_laplacian(&boundary).into();
-        let up_persistent_laplacian = up_persistent_laplacian_step(&up_laplacian).unwrap();
+        let up_persistent_laplacian = up_persistent_laplacian_step(up_laplacian).unwrap();
 
         let mut expected = CooMatrix::new(4, 4);
         expected.push(0, 0, 1.0);
@@ -537,5 +629,35 @@ mod tests {
             0.5 * CsrMatrix::from(&expected),
             up_persistent_laplacian.csr
         );
+    }
+
+    #[test]
+    fn test_homology_example_3_4() {
+        let mut coo_boundary_2 = CooMatrix::new(5, 2);
+        coo_boundary_2.push(0, 0, 1.0);
+        coo_boundary_2.push(1, 0, 1.0);
+        coo_boundary_2.push(4, 0, -1.0);
+
+        coo_boundary_2.push(2, 1, 1.0);
+        coo_boundary_2.push(3, 1, -1.0);
+        coo_boundary_2.push(4, 1, 1.0);
+        let boundary_2 = coo_boundary_2.into();
+
+        let mut coo_boundary_1 = CooMatrix::new(4, 5);
+        coo_boundary_1.push(0, 0, -1.0);
+        coo_boundary_1.push(0, 1, -1.0);
+        coo_boundary_1.push(0, 4, -1.0);
+        coo_boundary_1.push(1, 0, 1.0);
+        coo_boundary_1.push(1, 2, -1.0);
+        coo_boundary_1.push(2, 2, 1.0);
+        coo_boundary_1.push(2, 3, -1.0);
+        coo_boundary_1.push(2, 4, 1.0);
+        coo_boundary_1.push(3, 1, 1.0);
+        coo_boundary_1.push(3, 3, 1.0);
+        let boundary_1 = coo_boundary_1.into();
+
+        let homology_dimension =
+            homology_dimension(&boundary_2, (4, 4), (5, 2), &boundary_1, (4, 4));
+        assert_eq!(homology_dimension.unwrap(), 1)
     }
 }
