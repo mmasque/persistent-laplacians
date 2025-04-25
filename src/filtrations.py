@@ -4,7 +4,6 @@ from collections import defaultdict
 import bisect
 
 def simplices_by_dimension(filtration):
-# 1. Create the global boundary map
     simplices_by_dim = defaultdict(list)
     simplices_by_dim_only_filt = defaultdict(list)
     for (simplex, filt_value) in filtration:
@@ -47,9 +46,9 @@ def compute_boundary_matrices(simplices):
         # for each of the higher simplices
         for col, simplex in enumerate(higher_simplices):
             # for each of the vertices of the simplex
-            for i, _ in enumerate(simplex):
+            for i, _ in enumerate(sorted(simplex)):
                 # get face missing this index
-                face = simplex[:i] + simplex[i+1:]
+                face = tuple(sorted(sorted(simplex)[:i] + sorted(simplex)[i+1:]))
                 # since this is a simplicial complex, the face is in the lower simplices
                 row = lower_index_map.get(face)
                 rows.append(row)
@@ -69,7 +68,7 @@ def filtration_hash_map(filtration, simplices_by_dim_only_filt):
         idx = bisect.bisect_right(lst, b)
         return idx 
     unique_filtration_values = sorted(list(set([f for (_, f) in filtration])))
-    # print(simplices_by_dim_only_filt)
+    print(unique_filtration_values)
     # For each filtration value, get indices for the boundary map at that filtration value
     boundary_maps_index_dict = {filt_index: 
                                     {  
