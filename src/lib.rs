@@ -1,3 +1,4 @@
+use core::{num, panic};
 use lanczos::{Hermitian, HermitianEigen, Order};
 use nalgebra::DVector;
 use nalgebra_sparse::csr::CsrMatrix;
@@ -5,9 +6,11 @@ use nalgebra_sparse::{CooMatrix, CscMatrix};
 use numpy::PyArray1;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use sprs::linalg::ordering::order;
 use sprs::DenseVector;
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::panic::catch_unwind;
 
 // Temporary before I find a better solution.
 fn is_float_zero(float: f64) -> bool {
@@ -271,13 +274,14 @@ fn up_persistent_laplacian_step(
         return Some(SparseMatrix::from(exclude_last_row_col - outer_weighed));
     } else {
         let mut coo = CooMatrix::new(new_dim, new_dim);
-        for col in 0..(new_dim - 1) {
+        let num_cols_to_edit = new_dim.checked_sub(1).unwrap_or(0);
+        for col in 0..num_cols_to_edit {
             let col_view = csc.col_iter().nth(col).unwrap();
             let rows = col_view.row_indices();
             let vals = col_view.values();
 
             for (&r, &v) in rows.iter().zip(vals.iter()) {
-                if r < new_dim - 1 {
+                if r < num_cols_to_edit {
                     coo.push(r, col, v);
                 }
             }
@@ -366,17 +370,95 @@ pub fn eigen_persistent_laplacian(
     Some(eigen)
 }
 
+// Assumes number of (q) simplices increases by at most 1 on each step of filtration
 pub fn persistent_laplacians_of_filtration(
     sparse_boundary_maps: HashMap<usize, SparseMatrix<f64>>,
+    // filtration_index: {q: dimension_q_simplices}
     filt_hash: HashMap<usize, HashMap<usize, usize>>,
-) {
-    // For now, do the iterations naively.
-    let mut ordered_filtrations: Vec<_> = filt_hash.iter().collect::<Vec<_>>();
-    ordered_filtrations.sort_by(|a, b| a.0.cmp(&b.0).reverse());
-    for (filtration_index, dimension_hashmap) in ordered_filtrations {
-        println!("Filtration index: {}", filtration_index)
-        // dimension hashmap: q: dim of q at filtration indices
+) -> HashMap<usize, HashMap<(usize, usize), usize>> {
+    // q: {(K, L): eigenvalues of pair K \hookrightarrow L}
+    let mut eigenvalues = HashMap::new();
+
+    // Get the filtration indices in descending order
+    let mut filtration_indices: Vec<_> = filt_hash.keys().collect();
+    filtration_indices.sort_by(|a, b| b.cmp(a));
+    let mut dimensions: Vec<&usize> = sparse_boundary_maps.keys().collect::<Vec<_>>();
+    dimensions.sort();
+
+    // dimension hashmap: q: dim of C_q at filtration indices
+    for q in dimensions {
+        let global_boundary_map_q = match sparse_boundary_maps.get(&q) {
+            Some(map) => &map,
+            None => &SparseMatrix::from(CooMatrix::zeros(1, 1)),
+        };
+        let global_boundary_map_qp1 = match sparse_boundary_maps.get(&(q + 1)) {
+            Some(map) => &map,
+            None => &SparseMatrix::from(CooMatrix::zeros(1, 1)),
+        };
+        // Initialize results hash of eigenvalues for q-simplices.
+        let mut q_eigenvalues = HashMap::new();
+        for l in &filtration_indices {
+            let dimension_hashmap_l = filt_hash.get(l).unwrap();
+            let num_q_simplices_l = dimension_hashmap_l.get(&q).unwrap();
+            let num_qp1_simplices_l = dimension_hashmap_l.get(&(q + 1)).unwrap_or(&0);
+            let boundary_map_l_qp1 = upper_submatrix(
+                &global_boundary_map_qp1.coo,
+                *num_q_simplices_l,
+                *num_qp1_simplices_l,
+            )
+            .into();
+            let mut up_laplacian = up_laplacian(&boundary_map_l_qp1);
+            // For each filtration value lower than the current filtration, compute the persistent laplacian.
+            // This is the step for which we need the dense filtration.
+            for k in (0..**l).rev() {
+                // println!("L, K pair is ({}, {})", l, k);
+                // Compute the up persistent laplacian for K \hookrightarrow L inductively
+                let dimension_hashmap_k = filt_hash.get(&k).unwrap();
+                let num_q_simplices_k = dimension_hashmap_k.get(q).unwrap();
+                let lower_by = up_laplacian.csc.ncols() - num_q_simplices_k;
+                // println!(
+                //     "Will need {} iterations for the up persistent laplacian, n q- simplexes: {}",
+                //     lower_by, num_q_simplices_k
+                // );
+                // We can only lower by 1 at a time, so if lower_by > 1, we take it step by step
+                for _ in 1..=lower_by {
+                    let new_up_persistent_laplacian =
+                        up_persistent_laplacian_step(up_laplacian).unwrap();
+                    // Update recursive variable
+                    up_laplacian = new_up_persistent_laplacian;
+                }
+
+                // If the filtration index pair (k, l) is part of the original
+                // Compute the down persistent laplacian for K \hookrightarrow L
+                let num_qm1_simplices_k = dimension_hashmap_k.get(&(q - 1)).unwrap_or(&0);
+                let boundary_map_q_k = upper_submatrix(
+                    &global_boundary_map_q.coo,
+                    *num_qm1_simplices_k,
+                    *num_q_simplices_k,
+                )
+                .into();
+                let down_persistent_laplacian = down_laplacian(&boundary_map_q_k);
+
+                let persistent_laplacian = &up_laplacian.csc + &down_persistent_laplacian.csc;
+
+                // Compute eigenvalues if the persistent laplacian is not empty
+                let eigen = if persistent_laplacian.nrows() > 0 {
+                    // TODO: why does Lanczos sometimes panic?
+                    let lanczos_result = catch_unwind(|| {
+                        persistent_laplacian.eigsh(500, Order::Smallest).eigenvalues
+                    })
+                    .map(|data| count_zeros(data, 1e-2));
+                    lanczos_result.unwrap_or(0)
+                } else {
+                    0
+                };
+                // Update results hash
+                q_eigenvalues.insert((k, **l), eigen);
+            }
+        }
+        eigenvalues.insert(*q, q_eigenvalues);
     }
+    eigenvalues
 }
 
 #[pyfunction]
@@ -384,8 +466,8 @@ fn process_tda(py: Python, boundary_maps: &PyDict, filt: &PyDict) -> PyResult<Py
     let sparse_boundary_maps = process_sparse_dict(boundary_maps).unwrap();
 
     let filt_hash = parse_nested_dict(&filt).unwrap();
-    persistent_laplacians_of_filtration(sparse_boundary_maps, filt_hash);
-    Ok(0.into_py(py))
+    let eigenvalues = persistent_laplacians_of_filtration(sparse_boundary_maps, filt_hash);
+    Ok(eigenvalues.into_py(py))
 }
 
 #[pymodule]
@@ -434,16 +516,12 @@ fn drop_last_row_col_coo(matrix: &CooMatrix<f64>) -> CooMatrix<f64> {
 /// rows and cols are the dimensions of the submatrix to take
 /// TODO: maybe take ownership, then early return when rows = nrows, cols = ncols
 fn upper_submatrix(matrix: &CooMatrix<f64>, rows: usize, cols: usize) -> CooMatrix<f64> {
-    let nrows = matrix.nrows();
-    let ncols = matrix.ncols();
     let mut new_coo = CooMatrix::new(rows, cols);
-
     for (i, j, v) in matrix.triplet_iter() {
         if i < rows && j < cols {
             new_coo.push(i, j, *v);
         }
     }
-
     new_coo
 }
 

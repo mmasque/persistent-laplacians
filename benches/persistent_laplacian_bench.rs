@@ -7,7 +7,7 @@ use persistent_laplacians::{
 };
 mod helpers;
 fn bench_up_persistent_laplacian(c: &mut Criterion) {
-    let sizes = [100, 200, 300, 400, 500];
+    let sizes = [25, 100, 200, 300, 400, 500];
     let plot_config = PlotConfiguration::default().summary_scale(AxisScale::Linear);
     let mut group = c.benchmark_group("Up Persistent Laplacian");
     group.plot_config(plot_config);
@@ -23,7 +23,7 @@ fn bench_up_persistent_laplacian(c: &mut Criterion) {
 }
 
 fn bench_persistent_laplacian(c: &mut Criterion) {
-    let sizes = [100, 200, 300, 400, 500, 600, 700, 800];
+    let sizes = [25, 100, 200, 300, 400, 500, 600, 700, 800];
     let plot_config = PlotConfiguration::default().summary_scale(AxisScale::Linear);
     let mut group = c.benchmark_group("Persistent Laplacian");
     group.plot_config(plot_config);
