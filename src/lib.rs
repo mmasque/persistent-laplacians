@@ -1,4 +1,3 @@
-use core::{num, panic};
 use lanczos::{Hermitian, HermitianEigen, Order};
 use nalgebra::DVector;
 use nalgebra_sparse::csr::CsrMatrix;
@@ -6,7 +5,6 @@ use nalgebra_sparse::{CooMatrix, CscMatrix};
 use numpy::PyArray1;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use sprs::linalg::ordering::order;
 use sprs::DenseVector;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -386,7 +384,7 @@ pub fn persistent_laplacians_of_filtration(
     dimensions.sort();
 
     // dimension hashmap: q: dim of C_q at filtration indices
-    for q in dimensions {
+    for q in 1..=1 {
         let global_boundary_map_q = match sparse_boundary_maps.get(&q) {
             Some(map) => &map,
             None => &SparseMatrix::from(CooMatrix::zeros(1, 1)),
@@ -400,33 +398,47 @@ pub fn persistent_laplacians_of_filtration(
         for l in &filtration_indices {
             let dimension_hashmap_l = filt_hash.get(l).unwrap();
             let num_q_simplices_l = dimension_hashmap_l.get(&q).unwrap();
-            let num_qp1_simplices_l = dimension_hashmap_l.get(&(q + 1)).unwrap_or(&0);
-            let boundary_map_l_qp1 = upper_submatrix(
-                &global_boundary_map_qp1.coo,
-                *num_q_simplices_l,
-                *num_qp1_simplices_l,
-            )
-            .into();
-            let mut up_laplacian = up_laplacian(&boundary_map_l_qp1);
+
+            // Only have a boundary map if there are higher dimensional simplices
+            let boundary_map_l_qp1: Option<SparseMatrix<f64>> =
+                if let Some(num_qp1_simplices_l) = dimension_hashmap_l.get(&(q + 1)) {
+                    Some(
+                        upper_submatrix(
+                            &global_boundary_map_qp1.coo,
+                            *num_q_simplices_l,
+                            *num_qp1_simplices_l,
+                        )
+                        .into(),
+                    )
+                } else {
+                    None
+                };
+            let mut up_laplacian = boundary_map_l_qp1.map(|b| up_laplacian(&b));
             // For each filtration value lower than the current filtration, compute the persistent laplacian.
             // This is the step for which we need the dense filtration.
-            for k in (0..**l).rev() {
+            for k in (0..=**l).rev() {
                 // println!("L, K pair is ({}, {})", l, k);
                 // Compute the up persistent laplacian for K \hookrightarrow L inductively
                 let dimension_hashmap_k = filt_hash.get(&k).unwrap();
-                let num_q_simplices_k = dimension_hashmap_k.get(q).unwrap();
-                let lower_by = up_laplacian.csc.ncols() - num_q_simplices_k;
-                // println!(
-                //     "Will need {} iterations for the up persistent laplacian, n q- simplexes: {}",
-                //     lower_by, num_q_simplices_k
-                // );
-                // We can only lower by 1 at a time, so if lower_by > 1, we take it step by step
-                for _ in 1..=lower_by {
-                    let new_up_persistent_laplacian =
-                        up_persistent_laplacian_step(up_laplacian).unwrap();
-                    // Update recursive variable
-                    up_laplacian = new_up_persistent_laplacian;
-                }
+                let num_q_simplices_k = dimension_hashmap_k.get(&q).unwrap();
+
+                up_laplacian = up_laplacian.map(|u| {
+                    let mut new_up = u;
+                    let lower_by = new_up.csc.ncols() - num_q_simplices_k;
+                    // We can only lower by 1 at a time, so if lower_by > 1, we take it step by step
+                    for _ in 1..=lower_by {
+                        let new_up_persistent_laplacian =
+                            up_persistent_laplacian_step(new_up).unwrap();
+                        // Update recursive variable
+                        new_up = new_up_persistent_laplacian;
+                    }
+                    new_up
+                });
+                let up_persistent_laplacian = if let Some(up) = up_laplacian.as_ref() {
+                    &up.csr
+                } else {
+                    &CsrMatrix::zeros(*num_q_simplices_k, *num_q_simplices_k)
+                };
 
                 // If the filtration index pair (k, l) is part of the original
                 // Compute the down persistent laplacian for K \hookrightarrow L
@@ -437,18 +449,21 @@ pub fn persistent_laplacians_of_filtration(
                     *num_q_simplices_k,
                 )
                 .into();
-                let down_persistent_laplacian = down_laplacian(&boundary_map_q_k);
+                let down_persistent_laplacian = down_laplacian(&boundary_map_q_k).csr;
 
-                let persistent_laplacian = &up_laplacian.csc + &down_persistent_laplacian.csc;
+                let persistent_laplacian = up_persistent_laplacian + down_persistent_laplacian;
 
-                // Compute eigenvalues if the persistent laplacian is not empty
-                let eigen = if persistent_laplacian.nrows() > 0 {
+                // Compute eigenvalues if the persistent laplacian has dimension > 1
+                let eigen = if persistent_laplacian.nrows() > 0 && persistent_laplacian.ncols() > 0
+                {
                     // TODO: why does Lanczos sometimes panic?
-                    let lanczos_result = catch_unwind(|| {
+                    if let Ok(lanczos_result) = catch_unwind(|| {
                         persistent_laplacian.eigsh(500, Order::Smallest).eigenvalues
-                    })
-                    .map(|data| count_zeros(data, 1e-2));
-                    lanczos_result.unwrap_or(0)
+                    }) {
+                        count_zeros(lanczos_result, 1e-2)
+                    } else {
+                        0
+                    }
                 } else {
                     0
                 };
@@ -456,7 +471,7 @@ pub fn persistent_laplacians_of_filtration(
                 q_eigenvalues.insert((k, **l), eigen);
             }
         }
-        eigenvalues.insert(*q, q_eigenvalues);
+        eigenvalues.insert(q, q_eigenvalues);
     }
     eigenvalues
 }

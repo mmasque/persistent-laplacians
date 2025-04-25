@@ -13,7 +13,7 @@ fn bench_up_persistent_laplacian(c: &mut Criterion) {
     group.plot_config(plot_config);
 
     for n in sizes {
-        let matrix = generate_large_sparse_matrix(n, 2 * n);
+        let matrix = generate_large_sparse_matrix(n, 6 * n, 2 * 6 * n);
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &_s| {
             b.iter(|| {
                 let _ = up_persistent_laplacian(&matrix, n - 1);
@@ -23,16 +23,17 @@ fn bench_up_persistent_laplacian(c: &mut Criterion) {
 }
 
 fn bench_persistent_laplacian(c: &mut Criterion) {
-    let sizes = [25, 100, 200, 300, 400, 500, 600, 700, 800];
+    let sizes = [25];
     let plot_config = PlotConfiguration::default().summary_scale(AxisScale::Linear);
     let mut group = c.benchmark_group("Persistent Laplacian");
     group.plot_config(plot_config);
 
     for n in sizes {
-        let boundary_2 = generate_large_sparse_matrix(n, 3 * n);
-        let boundary_1 = generate_large_sparse_matrix(n, 2 * n);
-        let dims_qp1_larger = (n, n);
-        let dims_qp1_smaller = (n / 2, n / 2); // n/2 q simplices, n/2 q+1 simplices
+        // More q+1 simplices than q simplices
+        let boundary_2 = generate_large_sparse_matrix(n, 6 * n, 6 * 3 * n);
+        let boundary_1 = generate_large_sparse_matrix(n, n, 2 * n);
+        let dims_qp1_larger = (n, 6 * n);
+        let dims_qp1_smaller = (n / 2, 6 * n / 2);
         let dims_q_smaller = (n / 2, n / 2);
         group.bench_with_input(
             BenchmarkId::new("Eigenvalues of persistent laplacian", n),
