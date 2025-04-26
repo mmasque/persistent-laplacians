@@ -14,11 +14,11 @@ use std::ptr::null;
 
 // Temporary before I find a better solution.
 fn is_float_zero(float: f64) -> bool {
-    float < 1e-4
+    float < 1e-5
 }
 
 // Sometimes you want them all
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SparseMatrix<T> {
     csc: CscMatrix<T>,
     csr: CsrMatrix<T>,
@@ -275,7 +275,7 @@ fn up_persistent_laplacian_step(
         return Some(SparseMatrix::from(exclude_last_row_col - outer_weighed));
     } else {
         let mut coo = CooMatrix::new(new_dim, new_dim);
-        let num_cols_to_edit = new_dim.checked_sub(1).unwrap_or(0);
+        let num_cols_to_edit = new_dim;
         for col in 0..num_cols_to_edit {
             let col_view = csc.col_iter().nth(col).unwrap();
             let rows = col_view.row_indices();
@@ -428,9 +428,6 @@ pub fn persistent_laplacians_of_filtration(
         for l in &filtration_indices {
             let dimension_hashmap_l = filt_hash.get(l).unwrap();
             let num_q_simplices_l = dimension_hashmap_l.get(&q).unwrap();
-            if **l == 9 {
-                println!("Num q simplices l: {}", num_q_simplices_l)
-            }
             // Only have a boundary map if there are higher dimensional simplices
             let boundary_map_l_qp1: Option<SparseMatrix<f64>> =
                 if let Some(num_qp1_simplices_l) = dimension_hashmap_l.get(&(q + 1)) {
@@ -445,60 +442,29 @@ pub fn persistent_laplacians_of_filtration(
                 } else {
                     None
                 };
-            if **l == 9 {
-                println!("D2: {:?}", boundary_map_l_qp1);
-            }
-            let up_laplacian = boundary_map_l_qp1.map(|b| up_laplacian(&b));
-            // let up_laplacian: Option<SparseMatrix<f64>> = boundary_map_l_qp1.map(|b| {
-            //     let t = b.csc.transpose();
-            //     SparseMatrix::from(b.csc * t)
-            // });
-            if **l == 9 {
-                println!("up laplacian before k loop: {:?}", up_laplacian);
-            }
+            let mut up_laplacian = boundary_map_l_qp1.map(|b| up_laplacian(&b));
             // For each filtration value lower than the current filtration, compute the persistent laplacian.
             // This is the step for which we need the dense filtration.
             for k in (0..=**l).rev() {
-                // println!("L, K pair is ({}, {})", l, k);
                 // Compute the up persistent laplacian for K \hookrightarrow L inductively
                 let dimension_hashmap_k = filt_hash.get(&k).unwrap();
                 let num_q_simplices_k = dimension_hashmap_k.get(&q).unwrap();
-                if k == 7 && **l == 9 {
-                    println!("up laplacian ({:?})", up_laplacian);
-                }
 
-                // up_laplacian = up_laplacian.map(|u| {
-                //     let mut new_up = u;
-                //     let lower_by = new_up.csc.ncols() - num_q_simplices_k;
-                //     // We can only lower by 1 at a time, so if lower_by > 1, we take it step by step
-                //     for _ in 1..=lower_by {
-                //         let new_up_persistent_laplacian =
-                //             up_persistent_laplacian_step(new_up).unwrap();
-                //         if k == 7 && **l == 9 {
-                //             println!(
-                //                 "New up has dimensions ({}, {})",
-                //                 new_up_persistent_laplacian.coo.nrows(),
-                //                 new_up_persistent_laplacian.coo.ncols()
-                //             );
-                //         }
-                //         // Update recursive variable
-                //         new_up = new_up_persistent_laplacian;
-                //     }
-                //     new_up
-                // });
+                up_laplacian = up_laplacian.map(|u| {
+                    let mut new_up = u;
+                    let lower_by = new_up.csc.ncols() - num_q_simplices_k;
+                    // We can only lower by 1 at a time, so if lower_by > 1, we take it step by step
+                    for _ in 1..=lower_by {
+                        let new_up_persistent_laplacian =
+                            up_persistent_laplacian_step(new_up).unwrap();
+                        // Update recursive variable
+                        new_up = new_up_persistent_laplacian;
+                    }
+                    new_up
+                });
 
                 let up_persistent_laplacian = if let Some(up) = up_laplacian.as_ref() {
-                    let d_rows = num_q_simplices_l - num_q_simplices_k;
-                    let dense_up_laplacian = to_dense(&up.csr);
-                    let schur = if d_rows > 0 {
-                        generalized_schur_complement(&dense_up_laplacian, d_rows, d_rows)
-                    } else {
-                        dense_up_laplacian
-                    };
-                    let schur_coo = CooMatrix::from(&schur);
-                    &CsrMatrix::from(&schur_coo)
-                    // Compute schur complement
-                    // &up.csr
+                    &up.csr
                 } else {
                     &CsrMatrix::zeros(*num_q_simplices_k, *num_q_simplices_k)
                 };
@@ -513,7 +479,7 @@ pub fn persistent_laplacians_of_filtration(
                 let down_persistent_laplacian =
                     down_laplacian(&SparseMatrix::from(boundary_map_q_k)).csr;
                 // let down_persistent_laplacian = &boundary_map_q_k.transpose() * &boundary_map_q_k;
-                let persistent_laplacian = up_persistent_laplacian + down_persistent_laplacian;
+                let persistent_laplacian = up_persistent_laplacian + &down_persistent_laplacian;
 
                 fn to_dense(csr: &CsrMatrix<f64>) -> DMatrix<f64> {
                     let nrows = csr.nrows();
@@ -531,14 +497,8 @@ pub fn persistent_laplacians_of_filtration(
                     let qr = dense.clone().qr();
                     let rank_defiency =
                         qr.r().diagonal().iter().filter(|d| d.abs() < 1e-12).count();
-                    let q = qr.q();
-                    let nullspace = q.column(q.ncols() - 1);
-                    if k == 7 && **l == 10 {
-                        println!("NULLSPACE IS {}", nullspace);
-                        println!("NULLSPACE DIM IS {}", rank_defiency);
-                        println!("{}", dense * nullspace);
-                    }
                     // Compute eigenvalues if the persistent laplacian has dimension > 1
+                    // Seems like the lanczos crate is buggy, replacing with slower dense computation
                     // let eigen = if persistent_laplacian.nrows() > 0
                     //     && persistent_laplacian.ncols() > 0
                     // {
