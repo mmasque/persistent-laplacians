@@ -291,86 +291,6 @@ fn up_persistent_laplacian_step(
     }
 }
 
-// Implementation of Theorem 5.1 algorithm in Memoli: https://arxiv.org/pdf/2012.02808
-pub fn up_persistent_laplacian(
-    boundary_map_qp1: &SparseMatrix<f64>,
-    lower_dim_by: usize,
-) -> Option<SparseMatrix<f64>> {
-    let mut current_laplacian = up_laplacian(&boundary_map_qp1);
-    for _ in 0..lower_dim_by {
-        let next_laplacian = up_persistent_laplacian_step(current_laplacian)?;
-        current_laplacian = next_laplacian;
-    }
-    return Some(current_laplacian);
-}
-
-// Given the global boundary maps d_{q+1}: (q+1) -> q and d_q: q -> (q-1), need
-// the dimensions of K for d_{q+1} and d_q,
-// the dimensions of L for d_{q+1} and d_q.
-pub fn persistent_laplacian(
-    global_boundary_map_qp1: &SparseMatrix<f64>,
-    dims_qp1_smaller: (usize, usize),
-    dims_qp1_larger: (usize, usize),
-    global_boundary_map_q: &SparseMatrix<f64>,
-    dims_q_smaller: (usize, usize),
-) -> Option<SparseMatrix<f64>> {
-    let (rows_q_smaller, cols_q_smaller) = dims_q_smaller;
-    // Quite slow, since we are throwing away the csc and csr and remaking them
-    let boundary_map_q_smaller =
-        upper_submatrix(&global_boundary_map_q.coo, rows_q_smaller, cols_q_smaller).into();
-    let down_persistent_laplacian = down_laplacian(&boundary_map_q_smaller);
-    let (rows_qp1_larger, cols_qp1_larger) = dims_qp1_larger;
-    let (rows_qp1_smaller, _) = dims_qp1_smaller; // TODO: cols don't matter?
-    let boundary_map_qp1_larger: SparseMatrix<f64> = upper_submatrix(
-        &global_boundary_map_qp1.coo,
-        rows_qp1_larger,
-        cols_qp1_larger,
-    )
-    .into();
-    // rows_qp1_smaller is codomain of map (q+1) -> (q) of the smaller of the complexes.
-    // rows_qp1_larger is codomain of map (q+1) -> (q) of the larger of the complexes.
-    let lower_dim_by = rows_qp1_larger - rows_qp1_smaller;
-    let up_persistent_laplacian = up_persistent_laplacian(&boundary_map_qp1_larger, lower_dim_by)?;
-
-    Some((up_persistent_laplacian.csc + down_persistent_laplacian.csc).into())
-}
-
-// Via computation of _all_ eigenvalues and eigenvectors via Lanczos algorithm for sparse matrices.
-pub fn homology_dimension(
-    global_boundary_map_qp1: &SparseMatrix<f64>,
-    dims_qp1_smaller: (usize, usize),
-    dims_qp1_larger: (usize, usize),
-    global_boundary_map_q: &SparseMatrix<f64>,
-    dims_q_smaller: (usize, usize),
-) -> Option<usize> {
-    let eigen = eigen_persistent_laplacian(
-        global_boundary_map_qp1,
-        dims_qp1_smaller,
-        dims_qp1_larger,
-        global_boundary_map_q,
-        dims_q_smaller,
-    )?;
-    Some(count_zeros(eigen.eigenvalues, 1e-5))
-}
-
-pub fn eigen_persistent_laplacian(
-    global_boundary_map_qp1: &SparseMatrix<f64>,
-    dims_qp1_smaller: (usize, usize),
-    dims_qp1_larger: (usize, usize),
-    global_boundary_map_q: &SparseMatrix<f64>,
-    dims_q_smaller: (usize, usize),
-) -> Option<HermitianEigen<f64>> {
-    let persistent_laplacian = persistent_laplacian(
-        global_boundary_map_qp1,
-        dims_qp1_smaller,
-        dims_qp1_larger,
-        global_boundary_map_q,
-        dims_q_smaller,
-    )?;
-    let eigen = persistent_laplacian.csc.eigsh(50, Order::Smallest);
-    Some(eigen)
-}
-
 // Dense and slow
 fn generalized_schur_complement(M: &DMatrix<f64>, D_rows: usize, D_cols: usize) -> DMatrix<f64> {
     // Dimensions of the global matrix M
@@ -390,6 +310,57 @@ fn generalized_schur_complement(M: &DMatrix<f64>, D_rows: usize, D_cols: usize) 
     let BD_pinvC = B_block * D_pinv * C_block;
     let schur = A_block - BD_pinvC;
     schur
+}
+
+/// Computes the qth up persistent laplacian of a pair of simplicial complexes K hookrightarrow L given the qth up laplacian
+/// of L and the number of q simplices of K.
+fn compute_up_persistent_laplacian(
+    num_q_simplices_k: usize,
+    up_laplacian: SparseMatrix<f64>,
+) -> SparseMatrix<f64> {
+    assert!(num_q_simplices_k > 0);
+    let lower_by = up_laplacian.csc.ncols() - num_q_simplices_k;
+    let mut new_up_persistent_laplacian = up_laplacian;
+    // We can only lower by 1 at a time, so if lower_by > 1, we take it step by step
+    for _ in 1..=lower_by {
+        new_up_persistent_laplacian =
+            up_persistent_laplacian_step(new_up_persistent_laplacian).unwrap();
+    }
+    new_up_persistent_laplacian
+}
+
+fn compute_down_persistent_laplacian(
+    num_qm1_simplices_k: usize,
+    num_q_simplices_k: usize,
+    global_boundary_map_q: &SparseMatrix<f64>,
+) -> SparseMatrix<f64> {
+    let boundary_map_q_k: CsrMatrix<f64> = CsrMatrix::from(&upper_submatrix(
+        &global_boundary_map_q.coo,
+        num_qm1_simplices_k,
+        num_q_simplices_k,
+    ));
+    let down_persistent_laplacian = down_laplacian(&SparseMatrix::from(boundary_map_q_k));
+    down_persistent_laplacian
+}
+
+fn to_dense(csr: &CsrMatrix<f64>) -> DMatrix<f64> {
+    let nrows = csr.nrows();
+    let ncols = csr.ncols();
+    let mut dense = DMatrix::<f64>::zeros(nrows, ncols);
+
+    // iterate all stored (i, j, v) triplets and write into the dense matrix
+    for (i, j, v) in csr.triplet_iter() {
+        dense[(i, j)] = *v;
+    }
+    dense
+}
+
+fn compute_homology_from_persistent_laplacian(persistent_laplacian: &CsrMatrix<f64>) -> usize {
+    assert!(persistent_laplacian.nrows() > 0 && persistent_laplacian.ncols() > 0);
+    let dense = to_dense(&persistent_laplacian);
+    let qr = dense.clone().qr();
+    let rank_deficiency = qr.r().diagonal().iter().filter(|d| d.abs() < 1e-12).count();
+    rank_deficiency
 }
 
 // Assumes number of (q) simplices increases by at most 1 on each step of filtration
@@ -428,97 +399,63 @@ pub fn persistent_laplacians_of_filtration(
         for l in &filtration_indices {
             let dimension_hashmap_l = filt_hash.get(l).unwrap();
             let num_q_simplices_l = dimension_hashmap_l.get(&q).unwrap();
+            if num_q_simplices_l == &0 {
+                // The map is always zero, so we don't care
+                continue;
+            }
             // Only have a boundary map if there are higher dimensional simplices
-            let boundary_map_l_qp1: Option<SparseMatrix<f64>> =
-                if let Some(num_qp1_simplices_l) = dimension_hashmap_l.get(&(q + 1)) {
-                    Some(
-                        upper_submatrix(
-                            &global_boundary_map_qp1.coo,
-                            *num_q_simplices_l,
-                            *num_qp1_simplices_l,
-                        )
-                        .into(),
+            let num_qp1_simplices_l = dimension_hashmap_l.get(&(q + 1)).unwrap_or(&0);
+            let boundary_map_l_qp1: Option<SparseMatrix<f64>> = if num_qp1_simplices_l > &0 {
+                Some(
+                    upper_submatrix(
+                        &global_boundary_map_qp1.coo,
+                        *num_q_simplices_l,
+                        *num_qp1_simplices_l,
                     )
-                } else {
-                    None
-                };
-            let mut up_laplacian = boundary_map_l_qp1.map(|b| up_laplacian(&b));
+                    .into(),
+                )
+            } else {
+                None
+            };
+            let mut up_persistent_laplacian = boundary_map_l_qp1.map(|b| up_laplacian(&b));
             // For each filtration value lower than the current filtration, compute the persistent laplacian.
             // This is the step for which we need the dense filtration.
             for k in (0..=**l).rev() {
-                // Compute the up persistent laplacian for K \hookrightarrow L inductively
                 let dimension_hashmap_k = filt_hash.get(&k).unwrap();
                 let num_q_simplices_k = dimension_hashmap_k.get(&q).unwrap();
+                if num_q_simplices_k == &0 {
+                    // The map is always zero, so we don't care
+                    continue;
+                }
+                let num_qm1_simplices_k = dimension_hashmap_k.get(&(q - 1)).unwrap_or(&0);
 
-                up_laplacian = up_laplacian.map(|u| {
-                    let mut new_up = u;
-                    let lower_by = new_up.csc.ncols() - num_q_simplices_k;
-                    // We can only lower by 1 at a time, so if lower_by > 1, we take it step by step
-                    for _ in 1..=lower_by {
-                        let new_up_persistent_laplacian =
-                            up_persistent_laplacian_step(new_up).unwrap();
-                        // Update recursive variable
-                        new_up = new_up_persistent_laplacian;
-                    }
-                    new_up
-                });
-
-                let up_persistent_laplacian = if let Some(up) = up_laplacian.as_ref() {
-                    &up.csr
-                } else {
-                    &CsrMatrix::zeros(*num_q_simplices_k, *num_q_simplices_k)
-                };
+                // Compute the up persistent laplacian for K \hookrightarrow L inductively
+                up_persistent_laplacian = up_persistent_laplacian
+                    .map(|u| compute_up_persistent_laplacian(*num_q_simplices_k, u));
 
                 // Compute the down persistent laplacian for K \hookrightarrow L
-                let num_qm1_simplices_k = dimension_hashmap_k.get(&(q - 1)).unwrap_or(&0);
-                let boundary_map_q_k: CsrMatrix<f64> = CsrMatrix::from(&upper_submatrix(
-                    &global_boundary_map_q.coo,
-                    *num_qm1_simplices_k,
-                    *num_q_simplices_k,
-                ));
-                let down_persistent_laplacian =
-                    down_laplacian(&SparseMatrix::from(boundary_map_q_k)).csr;
-                // let down_persistent_laplacian = &boundary_map_q_k.transpose() * &boundary_map_q_k;
-                let persistent_laplacian = up_persistent_laplacian + &down_persistent_laplacian;
+                // If there are no lower simplices, the map factors via the 0 vector space, so it is zero
+                let down_persistent_laplacian = if num_qm1_simplices_k > &0 {
+                    Some(compute_down_persistent_laplacian(
+                        *num_qm1_simplices_k,
+                        *num_q_simplices_k,
+                        global_boundary_map_q,
+                    ))
+                } else {
+                    None
+                };
 
-                fn to_dense(csr: &CsrMatrix<f64>) -> DMatrix<f64> {
-                    let nrows = csr.nrows();
-                    let ncols = csr.ncols();
-                    let mut dense = DMatrix::<f64>::zeros(nrows, ncols);
-
-                    // iterate all stored (i, j, v) triplets and write into the dense matrix
-                    for (i, j, v) in csr.triplet_iter() {
-                        dense[(i, j)] = *v;
+                if let Some(persistent_laplacian) =
+                    match (&up_persistent_laplacian, &down_persistent_laplacian) {
+                        (Some(up), Some(down)) => Some(&up.csr + &down.csr),
+                        (None, None) => None,
+                        (Some(up), None) => Some(up.csr.clone()),
+                        (None, Some(down)) => Some(down.csr.clone()),
                     }
-                    dense
-                }
-                if persistent_laplacian.nrows() > 0 && persistent_laplacian.ncols() > 0 {
-                    let dense = to_dense(&persistent_laplacian);
-                    let qr = dense.clone().qr();
-                    let rank_defiency =
-                        qr.r().diagonal().iter().filter(|d| d.abs() < 1e-12).count();
-                    // Compute eigenvalues if the persistent laplacian has dimension > 1
-                    // Seems like the lanczos crate is buggy, replacing with slower dense computation
-                    // let eigen = if persistent_laplacian.nrows() > 0
-                    //     && persistent_laplacian.ncols() > 0
-                    // {
-                    //     // TODO: why does Lanczos sometimes panic?
-                    //     if let Ok(lanczos_result) = catch_unwind(|| {
-                    //         let eig = persistent_laplacian.eigsh(500, Order::Smallest).eigenvalues;
-                    //         if k == 7 && **l == 10 {
-                    //             println!("{:}", eig);
-                    //         }
-                    //         eig
-                    //     }) {
-                    //         count_zeros(lanczos_result, 1e-5)
-                    //     } else {
-                    //         0
-                    //     }
-                    // } else {
-                    //     0
-                    // };
-                    // // Update results hash
-                    q_eigenvalues.insert((k, **l), rank_defiency);
+                {
+                    let homology =
+                        compute_homology_from_persistent_laplacian(&persistent_laplacian);
+                    q_eigenvalues.insert((k, **l), homology);
                 }
             }
         }
@@ -582,6 +519,9 @@ fn drop_last_row_col_coo(matrix: &CooMatrix<f64>) -> CooMatrix<f64> {
 /// rows and cols are the dimensions of the submatrix to take
 /// TODO: maybe take ownership, then early return when rows = nrows, cols = ncols
 fn upper_submatrix(matrix: &CooMatrix<f64>, rows: usize, cols: usize) -> CooMatrix<f64> {
+    // Temporary asserts to avoid annoying size bugs
+    assert!(rows > 0);
+    assert!(cols > 0);
     let mut new_coo = CooMatrix::new(rows, cols);
     for (i, j, v) in matrix.triplet_iter() {
         if i < rows && j < cols {
@@ -785,35 +725,5 @@ mod tests {
             0.5 * CsrMatrix::from(&expected),
             up_persistent_laplacian.csr
         );
-    }
-
-    #[test]
-    fn test_homology_example_3_4() {
-        let mut coo_boundary_2 = CooMatrix::new(5, 2);
-        coo_boundary_2.push(0, 0, 1.0);
-        coo_boundary_2.push(1, 0, 1.0);
-        coo_boundary_2.push(4, 0, -1.0);
-
-        coo_boundary_2.push(2, 1, 1.0);
-        coo_boundary_2.push(3, 1, -1.0);
-        coo_boundary_2.push(4, 1, 1.0);
-        let boundary_2 = coo_boundary_2.into();
-
-        let mut coo_boundary_1 = CooMatrix::new(4, 5);
-        coo_boundary_1.push(0, 0, -1.0);
-        coo_boundary_1.push(0, 1, -1.0);
-        coo_boundary_1.push(0, 4, -1.0);
-        coo_boundary_1.push(1, 0, 1.0);
-        coo_boundary_1.push(1, 2, -1.0);
-        coo_boundary_1.push(2, 2, 1.0);
-        coo_boundary_1.push(2, 3, -1.0);
-        coo_boundary_1.push(2, 4, 1.0);
-        coo_boundary_1.push(3, 1, 1.0);
-        coo_boundary_1.push(3, 3, 1.0);
-        let boundary_1 = coo_boundary_1.into();
-
-        let homology_dimension =
-            homology_dimension(&boundary_2, (4, 4), (5, 2), &boundary_1, (4, 4));
-        assert_eq!(homology_dimension.unwrap(), 1)
     }
 }
