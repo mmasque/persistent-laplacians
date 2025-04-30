@@ -1,0 +1,25 @@
+[build-system]
+requires = [
+  "setuptools>=61.0",
+  "wheel"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "persistent_laplacians_py"
+version = "0.1.0"
+description = "Python bindings & tests for persistent_laplacians Rust crate"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "gudhi",
+  "tadasets",
+  "pytest", 
+  "maturin"
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

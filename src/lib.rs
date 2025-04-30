@@ -4,6 +4,7 @@ use nalgebra_sparse::{CooMatrix, CscMatrix};
 use numpy::PyArray1;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use single_svdlib::lanczos;
 use sprs::DenseVector;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -270,9 +271,6 @@ fn up_persistent_laplacian_step(
         })
         .unwrap_or((true, 0.0));
     let exclude_last_row_col_coo = drop_last_row_col_coo(&coo);
-    if new_dim > 82 && new_dim < 85 {
-        println!("bottom right with new dimension {new_dim} is: {bottom_right_value}");
-    }
     if !bottom_right_is_zero {
         // prev(i, j) - prev(i, dim_prev) * prev(dim_prev, j) / prev(dim_prev, dim_prev)
         let outer_coo = outer_product_last_col_row(&prev_up_persistent_laplacian);
@@ -281,43 +279,6 @@ fn up_persistent_laplacian_step(
         return Some(SparseMatrix::from(exclude_last_row_col - outer_weighed));
     } else {
         return Some(SparseMatrix::from(exclude_last_row_col_coo));
-    }
-}
-
-// Dense and slow
-fn generalized_schur_complement(M: &DMatrix<f64>, D_rows: usize, D_cols: usize) -> DMatrix<f64> {
-    // Dimensions of the global matrix M
-    let m = M.nrows();
-    let n = M.ncols();
-
-    let A_block = M.view((0, 0), (m - D_rows, n - D_cols));
-    let B_block = M.view((0, n - D_cols), (m - D_rows, D_cols));
-    let C_block = M.view((m - D_rows, 0), (D_rows, n - D_cols));
-    let D_block = M.view((m - D_rows, n - D_cols), (D_rows, D_cols));
-
-    // Compute the Moore-Penrose pseudoinverse of D
-    let D_pinv = D_block.pseudo_inverse(1e-10).unwrap();
-
-    // Compute the generalized Schur complement
-    let BD_pinvC = B_block * D_pinv * C_block;
-    let schur = A_block - BD_pinvC;
-    schur
-}
-
-fn compute_up_persistent_laplacian_schur(
-    up_laplacian: &SparseMatrix<f64>,
-    num_q_simplices_k: usize,
-) -> DMatrix<f64> {
-    assert!(num_q_simplices_k > 0);
-    let bottom_diag_shape = up_laplacian.csc.ncols() - num_q_simplices_k;
-    if bottom_diag_shape > 0 {
-        generalized_schur_complement(
-            &to_dense(&up_laplacian.csr),
-            bottom_diag_shape,
-            bottom_diag_shape,
-        )
-    } else {
-        to_dense(&up_laplacian.csr)
     }
 }
 
@@ -380,15 +341,42 @@ fn to_dense(csr: &CsrMatrix<f64>) -> DMatrix<f64> {
 
 fn compute_homology_from_persistent_laplacian(persistent_laplacian: &CsrMatrix<f64>) -> usize {
     assert!(persistent_laplacian.nrows() > 0 && persistent_laplacian.ncols() > 0);
-    let dense = to_dense(&persistent_laplacian);
-    compute_homology_from_persistent_laplacian_dense(&dense)
+    lanczos::svd(persistent_laplacian).unwrap().d
 }
 
 fn compute_homology_from_persistent_laplacian_dense(persistent_laplacian: &DMatrix<f64>) -> usize {
     assert!(persistent_laplacian.nrows() > 0 && persistent_laplacian.ncols() > 0);
-    let qr = persistent_laplacian.clone().qr();
-    let rank_deficiency = qr.r().diagonal().iter().filter(|d| d.abs() < 1e-12).count();
-    rank_deficiency
+    let svd = nalgebra::SVD::new(persistent_laplacian.clone(), true, true);
+    let tol = 1e-12;
+    let nullity = svd
+        .singular_values
+        .iter()
+        .filter(|&&sigma| sigma.abs() < tol)
+        .count();
+
+    //and verify A·v ≈ 0 for each nullvector
+    if let Some(vt) = svd.v_t {
+        for &sigma in svd
+            .singular_values
+            .iter()
+            .filter(|&&sigma| sigma.abs() < tol)
+        {
+            // find index i of this sigma, grab the i-th column of V
+            let i = svd
+                .singular_values
+                .iter()
+                .position(|&x| x == sigma)
+                .unwrap();
+            let v = vt.row(i).transpose();
+            let residual = persistent_laplacian.clone() * &v;
+            assert!(
+                residual.norm() < 1e-8,
+                "residual too big: {}",
+                residual.norm()
+            );
+        }
+    }
+    nullity
 }
 
 // Assumes number of (q) simplices increases by at most 1 on each step of filtration
@@ -445,8 +433,7 @@ pub fn persistent_laplacians_of_filtration(
             } else {
                 None
             };
-            let mut up_persistent_laplacian =
-                boundary_map_l_qp1.map(|b| up_laplacian_transposing(&b));
+            let mut up_persistent_laplacian = boundary_map_l_qp1.map(|b| up_laplacian(&b));
             // For each filtration value lower than the current filtration, compute the persistent laplacian.
             // let up_laplacian = boundary_map_l_qp1.map(|b| up_laplacian_transposing(&b));
             for k in (0..=**l).rev() {
@@ -457,26 +444,13 @@ pub fn persistent_laplacians_of_filtration(
                     continue;
                 }
                 let num_qm1_simplices_k = dimension_hashmap_k.get(&(q - 1)).unwrap_or(&0);
-                if l == &&83 && *q == 1 {
-                    println!("K = {k}, L = {l}");
-                    println!("Num 0-simplices of K: {}", num_qm1_simplices_k);
-                    println!("Num 1-simplices of K: {}", num_q_simplices_k);
-                    // println!(
-                    //     "Dimensions of previous up persistent laplacian: ({}, {})",
-                    //     up_persistent_laplacian.as_ref().unwrap().csc.ncols(),
-                    //     up_persistent_laplacian.as_ref().unwrap().csc.ncols()
-                    // );
-                    println!("Num 2-simplices of L: {}", num_qp1_simplices_l);
-                    println!("Num 1-simplices of L: {}", num_q_simplices_l);
-                }
                 // Compute the up persistent laplacian for K \hookrightarrow L inductively
                 up_persistent_laplacian = up_persistent_laplacian
                     .map(|u| compute_up_persistent_laplacian(*num_q_simplices_k, u));
-
                 // Compute the down persistent laplacian for K \hookrightarrow L
                 // If there are no lower simplices, the map factors via the 0 vector space, so it is zero
                 let down_persistent_laplacian = if num_qm1_simplices_k > &0 {
-                    Some(compute_down_persistent_laplacian_transposing(
+                    Some(compute_down_persistent_laplacian(
                         *num_qm1_simplices_k,
                         *num_q_simplices_k,
                         &global_boundary_map_q,
@@ -497,19 +471,6 @@ pub fn persistent_laplacians_of_filtration(
                         compute_homology_from_persistent_laplacian(&persistent_laplacian);
                     q_eigenvalues.insert((k, **l), homology);
                 }
-
-                // if let Some(persistent_laplacian) =
-                //     match (&up_persistent_laplacian, &down_persistent_laplacian) {
-                //         (Some(up), Some(down)) => Some(up + to_dense(&down.csr)),
-                //         (None, None) => None,
-                //         (Some(up), None) => Some(up.clone()),
-                //         (None, Some(down)) => Some(to_dense(&down.csr)),
-                //     }
-                // {
-                //     let homology =
-                //         compute_homology_from_persistent_laplacian_dense(&persistent_laplacian);
-                //     q_eigenvalues.insert((k, **l), homology);
-                // }
             }
         }
         eigenvalues.insert(*q, q_eigenvalues);
@@ -778,38 +739,5 @@ mod tests {
             0.5 * CsrMatrix::from(&expected),
             up_persistent_laplacian.csr
         );
-    }
-
-    use approx::assert_relative_eq;
-    use nalgebra::DMatrix;
-
-    /// Your Schur‐complement function under test
-    use super::generalized_schur_complement;
-
-    #[test]
-    fn test_generalized_schur_complement_2x2_blocks() {
-        // Construct A,B,C,D as small 2×2 matrices
-        let A = DMatrix::from_row_slice(2, 2, &[1.0, 2.0, 3.0, 4.0]);
-        let B = DMatrix::from_row_slice(2, 2, &[5.0, 6.0, 7.0, 8.0]);
-        let C = DMatrix::from_row_slice(2, 2, &[9.0, 10.0, 11.0, 12.0]);
-        let D = DMatrix::from_row_slice(2, 2, &[13.0, 14.0, 15.0, 16.0]);
-
-        // Build the full 4×4 M = [A B; C D]
-        let mut data = Vec::with_capacity(16);
-        data.extend(A.iter());
-        data.extend(B.iter());
-        data.extend(C.iter());
-        data.extend(D.iter());
-        let M = DMatrix::from_row_slice(4, 4, &data);
-
-        // Compute explicit Schur: A - B * D⁻¹ * C
-        let D_inv = D.clone().pseudo_inverse(1e-10).unwrap();
-        let expected = &A - &B * &D_inv * &C;
-
-        // Call your helper (eliminate last p=2 rows/cols)
-        let result = generalized_schur_complement(&M, 2, 2);
-
-        // Compare with a small tolerance
-        assert_relative_eq!(result, expected, epsilon = 1e-8);
     }
 }

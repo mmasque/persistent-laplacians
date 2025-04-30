@@ -1,4 +1,4 @@
-def barcodes(persistence_data, unique_filtration_values):
+def compute_barcodes(persistence_data, unique_filtration_values):
     max_filt_index = len(unique_filtration_values) - 1
     barcodes = {}
     for n in persistence_data.keys():
