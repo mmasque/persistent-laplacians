@@ -1,9 +1,11 @@
+use dashmap::DashMap;
 use nalgebra::{DMatrix, DVector};
 use nalgebra_sparse::csr::CsrMatrix;
 use nalgebra_sparse::{CooMatrix, CscMatrix};
 use numpy::PyArray1;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use single_svdlib::lanczos;
 use sprs::DenseVector;
 use std::cmp::Ordering;
@@ -341,7 +343,14 @@ fn to_dense(csr: &CsrMatrix<f64>) -> DMatrix<f64> {
 
 fn compute_homology_from_persistent_laplacian(persistent_laplacian: &CsrMatrix<f64>) -> usize {
     assert!(persistent_laplacian.nrows() > 0 && persistent_laplacian.ncols() > 0);
-    lanczos::svd(persistent_laplacian).unwrap().d
+    if persistent_laplacian.ncols() == 1 {
+        if is_float_zero(persistent_laplacian.get_entry(0, 0).unwrap().into_value()) {
+            return 0;
+        } else {
+            return 1;
+        }
+    }
+    lanczos::svd(persistent_laplacian).map(|l| l.d).unwrap_or(0)
 }
 
 fn compute_homology_from_persistent_laplacian_dense(persistent_laplacian: &DMatrix<f64>) -> usize {
@@ -411,70 +420,72 @@ pub fn persistent_laplacians_of_filtration(
             None => &SparseMatrix::from(CooMatrix::zeros(num_q_simplices_global, 0)),
         };
         // Initialize results hash of eigenvalues for q-simplices.
-        let mut q_eigenvalues = HashMap::new();
-        for l in &filtration_indices {
-            let dimension_hashmap_l = filt_hash.get(l).unwrap();
-            let num_q_simplices_l = dimension_hashmap_l.get(&q).unwrap();
-            if num_q_simplices_l == &0 {
-                // The map is always zero, so we don't care
-                continue;
-            }
-            // Only have a boundary map if there are higher dimensional simplices
-            let num_qp1_simplices_l = dimension_hashmap_l.get(&(q + 1)).unwrap_or(&0);
-            let boundary_map_l_qp1: Option<SparseMatrix<f64>> = if num_qp1_simplices_l > &0 {
-                Some(
-                    upper_submatrix(
-                        &global_boundary_map_qp1.coo,
-                        *num_q_simplices_l,
-                        *num_qp1_simplices_l,
+        let q_eigenvalues = DashMap::new();
+        filtration_indices
+            .par_iter()
+            .filter(|l| {
+                let dimension_hashmap_l = filt_hash.get(l).unwrap();
+                let num_q_simplices_l = dimension_hashmap_l.get(&q).unwrap();
+                num_q_simplices_l != &0
+            })
+            .for_each(|l| {
+                let dimension_hashmap_l = filt_hash.get(l).unwrap();
+                let num_q_simplices_l = dimension_hashmap_l.get(&q).unwrap();
+                // Only have a boundar y map if there are higher dimensional simplices
+                let num_qp1_simplices_l = dimension_hashmap_l.get(&(q + 1)).unwrap_or(&0);
+                let boundary_map_l_qp1: Option<SparseMatrix<f64>> = if num_qp1_simplices_l > &0 {
+                    Some(
+                        upper_submatrix(
+                            &global_boundary_map_qp1.coo,
+                            *num_q_simplices_l,
+                            *num_qp1_simplices_l,
+                        )
+                        .into(),
                     )
-                    .into(),
-                )
-            } else {
-                None
-            };
-            let mut up_persistent_laplacian = boundary_map_l_qp1.map(|b| up_laplacian(&b));
-            // For each filtration value lower than the current filtration, compute the persistent laplacian.
-            // let up_laplacian = boundary_map_l_qp1.map(|b| up_laplacian_transposing(&b));
-            for k in (0..=**l).rev() {
-                let dimension_hashmap_k = filt_hash.get(&k).unwrap();
-                let num_q_simplices_k = dimension_hashmap_k.get(&q).unwrap();
-                if num_q_simplices_k == &0 {
-                    // The map is always zero, so we don't care
-                    continue;
-                }
-                let num_qm1_simplices_k = dimension_hashmap_k.get(&(q - 1)).unwrap_or(&0);
-                // Compute the up persistent laplacian for K \hookrightarrow L inductively
-                up_persistent_laplacian = up_persistent_laplacian
-                    .map(|u| compute_up_persistent_laplacian(*num_q_simplices_k, u));
-                // Compute the down persistent laplacian for K \hookrightarrow L
-                // If there are no lower simplices, the map factors via the 0 vector space, so it is zero
-                let down_persistent_laplacian = if num_qm1_simplices_k > &0 {
-                    Some(compute_down_persistent_laplacian(
-                        *num_qm1_simplices_k,
-                        *num_q_simplices_k,
-                        &global_boundary_map_q,
-                    ))
                 } else {
                     None
                 };
-
-                if let Some(persistent_laplacian) =
-                    match (&up_persistent_laplacian, &down_persistent_laplacian) {
-                        (Some(up), Some(down)) => Some(&up.csr + &down.csr),
-                        (None, None) => None,
-                        (Some(up), None) => Some(up.csr.clone()),
-                        (None, Some(down)) => Some(down.csr.clone()),
+                let mut up_persistent_laplacian = boundary_map_l_qp1.map(|b| up_laplacian(&b));
+                // For each filtration value lower than the current filtration, compute the persistent laplacian.
+                for k in (0..=**l).rev() {
+                    let dimension_hashmap_k = filt_hash.get(&k).unwrap();
+                    let num_q_simplices_k = dimension_hashmap_k.get(&q).unwrap();
+                    if num_q_simplices_k == &0 {
+                        // The map is always zero, so we don't care
+                        continue;
                     }
-                {
-                    let homology = compute_homology_from_persistent_laplacian_dense(&to_dense(
-                        &persistent_laplacian,
-                    ));
-                    q_eigenvalues.insert((k, **l), homology);
+                    let num_qm1_simplices_k = dimension_hashmap_k.get(&(q - 1)).unwrap_or(&0);
+                    // Compute the up persistent laplacian for K \hookrightarrow L inductively
+                    up_persistent_laplacian = up_persistent_laplacian
+                        .map(|u| compute_up_persistent_laplacian(*num_q_simplices_k, u));
+                    // Compute the down persistent laplacian for K \hookrightarrow L
+                    // If there are no lower simplices, the map factors via the 0 vector space, so it is zero
+                    let down_persistent_laplacian = if num_qm1_simplices_k > &0 {
+                        Some(compute_down_persistent_laplacian(
+                            *num_qm1_simplices_k,
+                            *num_q_simplices_k,
+                            &global_boundary_map_q,
+                        ))
+                    } else {
+                        None
+                    };
+
+                    if let Some(persistent_laplacian) =
+                        match (&up_persistent_laplacian, &down_persistent_laplacian) {
+                            (Some(up), Some(down)) => Some(&up.csr + &down.csr),
+                            (None, None) => None,
+                            (Some(up), None) => Some(up.csr.clone()),
+                            (None, Some(down)) => Some(down.csr.clone()),
+                        }
+                    {
+                        let homology = compute_homology_from_persistent_laplacian_dense(&to_dense(
+                            &persistent_laplacian,
+                        ));
+                        q_eigenvalues.insert((k, **l), homology);
+                    }
                 }
-            }
-        }
-        eigenvalues.insert(*q, q_eigenvalues);
+            });
+        eigenvalues.insert(*q, q_eigenvalues.into_iter().collect());
     }
     eigenvalues
 }
