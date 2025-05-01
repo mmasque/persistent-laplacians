@@ -58,7 +58,7 @@ impl From<CooMatrix<f64>> for SparseMatrix<f64> {
     }
 }
 
-fn parse_nested_dict(filt: &PyDict) -> PyResult<HashMap<usize, HashMap<usize, usize>>> {
+pub fn parse_nested_dict(filt: &PyDict) -> PyResult<HashMap<usize, HashMap<usize, usize>>> {
     let mut filt_map = HashMap::with_capacity(filt.len());
 
     for (k_obj, sub_obj) in filt.iter() {
@@ -78,7 +78,7 @@ fn parse_nested_dict(filt: &PyDict) -> PyResult<HashMap<usize, HashMap<usize, us
     Ok(filt_map)
 }
 
-fn process_sparse_dict(dict: &PyDict) -> PyResult<HashMap<usize, SparseMatrix<f64>>> {
+pub fn process_sparse_dict(dict: &PyDict) -> PyResult<HashMap<usize, SparseMatrix<f64>>> {
     let mut result = HashMap::new();
     for (key, value) in dict.iter() {
         let key: usize = key.extract()?;
@@ -467,8 +467,9 @@ pub fn persistent_laplacians_of_filtration(
                         (None, Some(down)) => Some(down.csr.clone()),
                     }
                 {
-                    let homology =
-                        compute_homology_from_persistent_laplacian(&persistent_laplacian);
+                    let homology = compute_homology_from_persistent_laplacian_dense(&to_dense(
+                        &persistent_laplacian,
+                    ));
                     q_eigenvalues.insert((k, **l), homology);
                 }
             }

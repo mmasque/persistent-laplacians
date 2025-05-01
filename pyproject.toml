@@ -1,25 +1,24 @@
 [build-system]
-requires = [
-  "setuptools>=61.0",
-  "wheel"
-]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.8,<2.0"]
+build-backend = "maturin"
 
 [project]
-name = "persistent_laplacians_py"
-version = "0.1.0"
-description = "Python bindings & tests for persistent_laplacians Rust crate"
-readme = "README.md"
-requires-python = ">=3.10"
-dependencies = [
-  "gudhi",
-  "tadasets",
-  "pytest", 
-  "maturin"
+name = "persistent_laplacians"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
 ]
-
-[tool.setuptools]
-package-dir = {"" = "src"}
-
-[tool.setuptools.packages.find]
-where = ["src"]
+dependencies = [
+    "tadasets",
+    "gudhi"
+]
+dynamic = ["version"]
+[project.optional-dependencies]
+tests = [
+    "pytest",
+]
+[tool.maturin]
+python-source = "python"
+features = ["pyo3/extension-module"]

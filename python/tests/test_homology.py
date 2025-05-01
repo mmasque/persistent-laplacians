@@ -1,8 +1,9 @@
 import gudhi as gd
 import tadasets
-from filtrations import simplices_by_dimension, compute_boundary_matrices, filtration_hash_map
-from barcodes import compute_barcodes
-import persistent_laplacians
+from persistent_laplacians.filtrations import simplices_by_dimension, compute_boundary_matrices, filtration_hash_map
+from persistent_laplacians.data import sphere_data
+from persistent_laplacians.barcodes import compute_barcodes
+from persistent_laplacians import persistent_laplacians as pl
 import pytest
 
 # generate a variety of sphere parameters
@@ -21,24 +22,11 @@ SPHERE_PARAMS = [
     for seed in seeds
 ]
 
-def sphere_data(n, d, r, noise, seed):
-    # Python code setup
-    sphere = tadasets.dsphere(n=n, d=d, r=r, noise=noise, seed=seed)
-    alpha = gd.AlphaComplex(points=sphere)
-    st = alpha.create_simplex_tree()
-    filtration = list(st.get_filtration())
-
-    unique_filtration_values = sorted(list(set([f for (_, f) in filtration])))
-    simplices_by_dim, simplices_by_dim_only_filt = simplices_by_dimension(filtration)
-    boundary_matrices = compute_boundary_matrices(simplices_by_dim)
-    boundary_maps_index_dict = filtration_hash_map(filtration, simplices_by_dim_only_filt)
-    return boundary_matrices, boundary_maps_index_dict, unique_filtration_values, st
-
 @pytest.mark.parametrize("n,d,r,noise,seed", SPHERE_PARAMS)
 def test_rust_vs_gudhi(n, d, r, noise, seed):
     boundary_matrices, boundary_maps_index_dict, unique_filtration_values, st = sphere_data(n, d, r, noise, seed)
     # RUST call via maturin
-    result = persistent_laplacians.process_tda(
+    result = pl.process_tda(
         boundary_matrices,
         boundary_maps_index_dict
     )
