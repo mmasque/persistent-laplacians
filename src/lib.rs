@@ -481,6 +481,10 @@ pub fn persistent_laplacians_of_filtration(
                         let homology = compute_homology_from_persistent_laplacian_dense(&to_dense(
                             &persistent_laplacian,
                         ));
+                        // We don't need to compute for lower K if persistent homology is zero for this pair
+                        if homology == 0 {
+                            break;
+                        }
                         q_eigenvalues.insert((k, **l), homology);
                     }
                 }

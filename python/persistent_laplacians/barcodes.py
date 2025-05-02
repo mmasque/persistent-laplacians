@@ -4,7 +4,8 @@ def compute_barcodes(persistence_data, unique_filtration_values):
     for n in persistence_data.keys():
         bettis = persistence_data[n]
         barcodes_n = {}
-        for (i, j) in bettis:
+        pairs = [(i, j) for i in range(len(unique_filtration_values)) for j in range(i, len(unique_filtration_values))]
+        for (i, j) in pairs:
             persistent_ij = (bettis.get((i, j-1), 0) - bettis.get((i, j), 0)) - (bettis.get((i-1, j-1), 0) - bettis.get((i-1, j), 0))
             if persistent_ij != 0 and i != j:
                 barcodes_n[(i, j)] = persistent_ij
