@@ -2,11 +2,10 @@ use dashmap::DashMap;
 use nalgebra::{DMatrix, DVector};
 use nalgebra_sparse::csr::CsrMatrix;
 use nalgebra_sparse::{CooMatrix, CscMatrix};
-use numpy::PyArray1;
+use numpy::{IntoPyArray, PyArray1};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
-use single_svdlib::lanczos;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use sprs::DenseVector;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -341,21 +340,9 @@ fn to_dense(csr: &CsrMatrix<f64>) -> DMatrix<f64> {
     dense
 }
 
-fn compute_homology_from_persistent_laplacian(persistent_laplacian: &CsrMatrix<f64>) -> usize {
-    assert!(persistent_laplacian.nrows() > 0 && persistent_laplacian.ncols() > 0);
-    if persistent_laplacian.ncols() == 1 {
-        if is_float_zero(persistent_laplacian.get_entry(0, 0).unwrap().into_value()) {
-            return 0;
-        } else {
-            return 1;
-        }
-    }
-    lanczos::svd(persistent_laplacian).map(|l| l.d).unwrap_or(0)
-}
-
 fn compute_homology_from_persistent_laplacian_dense(persistent_laplacian: &DMatrix<f64>) -> usize {
     assert!(persistent_laplacian.nrows() > 0 && persistent_laplacian.ncols() > 0);
-    let svd = nalgebra::SVD::new(persistent_laplacian.clone(), true, true);
+    let svd = nalgebra::SVD::new(persistent_laplacian.clone(), false, false);
     let tol = 1e-12;
     let nullity = svd
         .singular_values
@@ -535,7 +522,6 @@ fn outer_product_last_col_row(sparse: &SparseMatrix<f64>) -> CooMatrix<f64> {
             coo.push(i, j, v_col * v_row);
         }
     }
-
     coo
 }
 
@@ -564,10 +550,62 @@ fn upper_submatrix(matrix: &CooMatrix<f64>, rows: usize, cols: usize) -> CooMatr
 pub fn count_zeros(data: DVector<f64>, eps: f64) -> usize {
     data.iter().filter(|&&x| x.abs() <= eps).count()
 }
+
+pub fn eigsh_scipy(
+    py: Python,
+    A: &CsrMatrix<f64>,
+    k: usize,
+    sigma: Option<f64>,
+    tol: Option<f64>,
+    maxiter: Option<usize>,
+    which: &str,
+) -> PyResult<Vec<f64>> {
+    // 1) Extract CSR data from nalgebra-sparse
+    let (nrows, ncols) = (A.nrows(), A.ncols());
+    let indptr: Vec<usize> = A.row_offsets().iter().cloned().collect();
+    let indices: Vec<usize> = A.col_indices().iter().cloned().collect();
+    let data: Vec<f64> = A.values().iter().cloned().collect();
+
+    // 2) Convert Rust Vecs into NumPy arrays
+    let py_indptr = indptr.into_pyarray(py);
+    let py_indices = indices.into_pyarray(py);
+    let py_data = data.into_pyarray(py);
+
+    // 3) Import scipy.sparse and build csr_matrix
+    let scipy_sparse = PyModule::import(py, "scipy.sparse")?;
+    let csr_matrix = scipy_sparse
+        .getattr("csr_matrix")?
+        .call1(((py_data, py_indices, py_indptr), (nrows, ncols)))?;
+
+    // 4) Import eigsh
+    let eigsh = PyModule::import(py, "scipy.sparse.linalg")?.getattr("eigsh")?;
+
+    let kwargs = PyDict::new(py);
+    kwargs.set_item("k", k)?; // usize → PyLong
+    kwargs.set_item("which", which)?; // &str → PyString
+    if let Some(s) = sigma {
+        kwargs.set_item("sigma", s)?; // f64 → PyFloat
+    }
+    if let Some(t) = tol {
+        kwargs.set_item("tol", t)?;
+    }
+    if let Some(mi) = maxiter {
+        kwargs.set_item("maxiter", mi)?;
+    }
+    let result = eigsh.call((csr_matrix,), Some(kwargs))?;
+
+    // 6) Extract eigenvalues (first element of the result tuple)
+    let eigvals_py: &PyArray1<f64> = result.get_item(0)?.downcast()?;
+    let eigvals = unsafe { eigvals_py.as_slice()?.to_vec() };
+
+    Ok(eigvals)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use nalgebra_sparse::{coo::CooMatrix, csr::CsrMatrix};
+    use pyo3::types::PyList;
     #[test]
     fn test_up_laplacian_triangle() {
         // Boundary map d1 (edges -> vertices)
@@ -755,5 +793,34 @@ mod tests {
             0.5 * CsrMatrix::from(&expected),
             up_persistent_laplacian.csr
         );
+    }
+
+    #[test]
+    fn test_python_lanczos() {
+        // Initialize Python interpreter
+        Python::with_gil(|py| {
+            // Build a small example CSRMatrix in Rust:
+            // A = [[2, -1, 0],
+            //      [-1, 2, -1],
+            //      [0, -1, 2]]
+            let sys = py.import("sys").unwrap();
+            let path: &PyList = sys.getattr("path").unwrap().downcast().unwrap();
+            path.insert(0, ".venv/lib/python3.10/site-packages")
+                .unwrap();
+
+            let mut builder = CooMatrix::zeros(10, 10);
+            builder.push(0, 0, 2.0);
+            builder.push(0, 1, -1.0);
+            builder.push(1, 0, -1.0);
+            builder.push(1, 1, 2.0);
+            builder.push(1, 2, -1.0);
+            builder.push(2, 1, -1.0);
+            builder.push(2, 2, 2.0);
+
+            let a = CsrMatrix::from(&builder);
+
+            let eigs = eigsh_scipy(py, &a, 2, Some(0.00001), None, None, "LM").unwrap();
+            println!("Smallest eigenvalues: {:?}", eigs);
+        });
     }
 }
