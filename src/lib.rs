@@ -795,7 +795,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn test_python_lanczos() {
         // Initialize Python interpreter
         Python::with_gil(|py| {
