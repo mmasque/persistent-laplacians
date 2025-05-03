@@ -239,8 +239,8 @@ fn up_laplacian(boundary_map_qp1: &SparseMatrix<f64>) -> SparseMatrix<f64> {
     (degree_matrix.csr - adjacency_matrix.csr).into()
 }
 
-fn up_laplacian_transposing(boundary_map_qp1: &SparseMatrix<f64>) -> SparseMatrix<f64> {
-    SparseMatrix::from(&boundary_map_qp1.csr * boundary_map_qp1.csr.transpose())
+fn up_laplacian_transposing(boundary_map_qp1: &CsrMatrix<f64>) -> CsrMatrix<f64> {
+    boundary_map_qp1 * boundary_map_qp1.transpose()
 }
 
 fn down_laplacian(boundary_map_q: &SparseMatrix<f64>) -> SparseMatrix<f64> {
@@ -249,37 +249,34 @@ fn down_laplacian(boundary_map_q: &SparseMatrix<f64>) -> SparseMatrix<f64> {
     (degree_matrix.csr - adjacency_matrix.csr).into()
 }
 
-fn down_laplacian_transposing(boundary_map_q: &SparseMatrix<f64>) -> SparseMatrix<f64> {
-    SparseMatrix::from(boundary_map_q.csr.transpose() * &boundary_map_q.csr)
+fn down_laplacian_transposing(boundary_map_q: &CsrMatrix<f64>) -> CsrMatrix<f64> {
+    boundary_map_q.transpose() * boundary_map_q
 }
 
 // Implementation of Theorem 5.1 in Memoli, equation 15.
 fn up_persistent_laplacian_step(
-    prev_up_persistent_laplacian: SparseMatrix<f64>,
-) -> Option<SparseMatrix<f64>> {
+    prev_up_persistent_laplacian: CsrMatrix<f64>,
+) -> Option<CsrMatrix<f64>> {
     // If the bottom right entry is zero in our input matrix, then return the previous laplacian
     // without the last row and column.
-    let csc = &prev_up_persistent_laplacian.csc;
-    let coo = &prev_up_persistent_laplacian.coo;
-    let dim_prev = csc.ncols();
+    let dim_prev = prev_up_persistent_laplacian.ncols();
     let new_dim = dim_prev.checked_sub(1)?;
     // Note: if check incurs binary search cost, so log(dim_prev). But the computation inside is already linear.
-    let bottom_right = csc.get_entry(new_dim, new_dim);
+    let bottom_right = prev_up_persistent_laplacian.get_entry(new_dim, new_dim);
     let (bottom_right_is_zero, bottom_right_value) = bottom_right
         .map(|x| {
             let value = x.into_value();
             (is_float_zero(value), value)
         })
         .unwrap_or((true, 0.0));
-    let exclude_last_row_col_coo = drop_last_row_col_coo(&coo);
+    let exclude_last_row_col = drop_last_row_col_csr(&prev_up_persistent_laplacian);
     if !bottom_right_is_zero {
         // prev(i, j) - prev(i, dim_prev) * prev(dim_prev, j) / prev(dim_prev, dim_prev)
-        let outer_coo = outer_product_last_col_row(&prev_up_persistent_laplacian);
-        let outer_weighed = CsrMatrix::from(&outer_coo) / bottom_right_value;
-        let exclude_last_row_col = CsrMatrix::from(&exclude_last_row_col_coo);
-        return Some(SparseMatrix::from(exclude_last_row_col - outer_weighed));
+        let outer =
+            outer_product_last_col_row_csr(&prev_up_persistent_laplacian) / bottom_right_value;
+        return Some(exclude_last_row_col - outer);
     } else {
-        return Some(SparseMatrix::from(exclude_last_row_col_coo));
+        return Some(exclude_last_row_col);
     }
 }
 
@@ -287,10 +284,10 @@ fn up_persistent_laplacian_step(
 /// of L and the number of q simplices of K.
 fn compute_up_persistent_laplacian(
     num_q_simplices_k: usize,
-    up_laplacian: SparseMatrix<f64>,
-) -> SparseMatrix<f64> {
+    up_laplacian: CsrMatrix<f64>,
+) -> CsrMatrix<f64> {
     assert!(num_q_simplices_k > 0);
-    let lower_by = up_laplacian.csc.ncols() - num_q_simplices_k;
+    let lower_by = up_laplacian.ncols() - num_q_simplices_k;
     let mut new_up_persistent_laplacian = up_laplacian;
     // We can only lower by 1 at a time, so if lower_by > 1, we take it step by step
     for _ in 1..=lower_by {
@@ -317,14 +314,14 @@ fn compute_down_persistent_laplacian(
 fn compute_down_persistent_laplacian_transposing(
     num_qm1_simplices_k: usize,
     num_q_simplices_k: usize,
-    global_boundary_map_q: &SparseMatrix<f64>,
-) -> SparseMatrix<f64> {
-    let q_boundary_k = CsrMatrix::from(&upper_submatrix(
-        &global_boundary_map_q.coo,
+    global_boundary_map_q: &CsrMatrix<f64>,
+) -> CsrMatrix<f64> {
+    let q_boundary_k = upper_submatrix_csr(
+        &global_boundary_map_q,
         num_qm1_simplices_k,
         num_q_simplices_k,
-    ));
-    let down_persistent_laplacian = down_laplacian_transposing(&SparseMatrix::from(q_boundary_k));
+    );
+    let down_persistent_laplacian = down_laplacian_transposing(&q_boundary_k);
     down_persistent_laplacian
 }
 
@@ -416,14 +413,15 @@ pub fn persistent_laplacians_of_filtration(
                 num_q_simplices_l != &0
             })
             .for_each(|l| {
+                // for l in &filtration_indices {
                 let dimension_hashmap_l = filt_hash.get(l).unwrap();
                 let num_q_simplices_l = dimension_hashmap_l.get(&q).unwrap();
                 // Only have a boundar y map if there are higher dimensional simplices
                 let num_qp1_simplices_l = dimension_hashmap_l.get(&(q + 1)).unwrap_or(&0);
-                let boundary_map_l_qp1: Option<SparseMatrix<f64>> = if num_qp1_simplices_l > &0 {
+                let boundary_map_l_qp1: Option<CsrMatrix<f64>> = if num_qp1_simplices_l > &0 {
                     Some(
-                        upper_submatrix(
-                            &global_boundary_map_qp1.coo,
+                        upper_submatrix_csr(
+                            &global_boundary_map_qp1.csr,
                             *num_q_simplices_l,
                             *num_qp1_simplices_l,
                         )
@@ -432,7 +430,8 @@ pub fn persistent_laplacians_of_filtration(
                 } else {
                     None
                 };
-                let mut up_persistent_laplacian = boundary_map_l_qp1.map(|b| up_laplacian(&b));
+                let mut up_persistent_laplacian =
+                    boundary_map_l_qp1.map(|b| up_laplacian_transposing(&b));
                 // For each filtration value lower than the current filtration, compute the persistent laplacian.
                 for k in (0..=**l).rev() {
                     let dimension_hashmap_k = filt_hash.get(&k).unwrap();
@@ -448,10 +447,10 @@ pub fn persistent_laplacians_of_filtration(
                     // Compute the down persistent laplacian for K \hookrightarrow L
                     // If there are no lower simplices, the map factors via the 0 vector space, so it is zero
                     let down_persistent_laplacian = if num_qm1_simplices_k > &0 {
-                        Some(compute_down_persistent_laplacian(
+                        Some(compute_down_persistent_laplacian_transposing(
                             *num_qm1_simplices_k,
                             *num_q_simplices_k,
-                            &global_boundary_map_q,
+                            &global_boundary_map_q.csr,
                         ))
                     } else {
                         None
@@ -459,10 +458,10 @@ pub fn persistent_laplacians_of_filtration(
 
                     if let Some(persistent_laplacian) =
                         match (&up_persistent_laplacian, &down_persistent_laplacian) {
-                            (Some(up), Some(down)) => Some(&up.csr + &down.csr),
+                            (Some(up), Some(down)) => Some(up + down),
                             (None, None) => None,
-                            (Some(up), None) => Some(up.csr.clone()),
-                            (None, Some(down)) => Some(down.csr.clone()),
+                            (Some(up), None) => Some(up.clone()),
+                            (None, Some(down)) => Some(down.clone()),
                         }
                     {
                         let homology = compute_homology_from_persistent_laplacian_dense(&to_dense(
@@ -472,6 +471,7 @@ pub fn persistent_laplacians_of_filtration(
                         if homology == 0 {
                             break;
                         }
+                        // let homology = persistent_laplacian.nnz();
                         q_eigenvalues.insert((k, **l), homology);
                     }
                 }
@@ -525,10 +525,75 @@ fn outer_product_last_col_row(sparse: &SparseMatrix<f64>) -> CooMatrix<f64> {
     coo
 }
 
+fn outer_product_last_col_row_csr(csr: &CsrMatrix<f64>) -> CsrMatrix<f64> {
+    let n = csr.nrows();
+    assert_eq!(n, csr.ncols());
+    let last = n - 1;
+    let indptr = csr.row_offsets();
+    let col_indices = csr.col_indices();
+    let values = csr.values();
+
+    // 1) Extract row = A[last, :]
+    let row_start = indptr[last];
+    let row_end = indptr[last + 1];
+    let row_idxs = &col_indices[row_start..row_end];
+    let row_vals = &values[row_start..row_end];
+
+    // 2) Build a length-n vector of the last column entries v[i] = A[i, last]
+    let mut col_vec = vec![0.0; n];
+    for i in 0..n {
+        let start = indptr[i];
+        let end = indptr[i + 1];
+        // scan that row’s indices for column = last
+        for idx in start..end {
+            if col_indices[idx] == last {
+                col_vec[i] = values[idx];
+                break;
+            }
+        }
+    }
+
+    // 3) Now build the outer product of col_vec[0..n-1] and row_vals[ j < n-1 ]
+    let m = n - 1;
+    // precompute row-nnz and total nnz
+    let row_nnz = row_idxs.iter().take_while(|&&j| j < m).count();
+    // each i with col_vec[i] != 0 contributes row_nnz entries
+    let mut indptr_new = Vec::with_capacity(m + 1);
+    indptr_new.push(0);
+    let mut offset = 0;
+    for i in 0..m {
+        if col_vec[i] != 0.0 {
+            offset += row_nnz;
+        }
+        indptr_new.push(offset);
+    }
+
+    let mut indices = Vec::with_capacity(offset);
+    let mut data = Vec::with_capacity(offset);
+    for i in 0..m {
+        let v = col_vec[i];
+        if v != 0.0 {
+            for (&j, &w) in row_idxs.iter().zip(row_vals.iter()) {
+                if j < m {
+                    indices.push(j);
+                    data.push(v * w);
+                }
+            }
+        }
+    }
+    CsrMatrix::try_from_csr_data(m, m, indptr_new, indices, data).unwrap()
+}
+
 fn drop_last_row_col_coo(matrix: &CooMatrix<f64>) -> CooMatrix<f64> {
     let nrows = matrix.nrows();
     let ncols = matrix.ncols();
     upper_submatrix(matrix, nrows - 1, ncols - 1)
+}
+
+fn drop_last_row_col_csr(matrix: &CsrMatrix<f64>) -> CsrMatrix<f64> {
+    let nrows = matrix.nrows();
+    let ncols = matrix.ncols();
+    upper_submatrix_csr(matrix, nrows - 1, ncols - 1)
 }
 
 /// Take upper left submatrix
@@ -545,6 +610,53 @@ fn upper_submatrix(matrix: &CooMatrix<f64>, rows: usize, cols: usize) -> CooMatr
         }
     }
     new_coo
+}
+
+fn upper_submatrix_csr(matrix: &CsrMatrix<f64>, rows: usize, cols: usize) -> CsrMatrix<f64> {
+    assert!(rows > 0 && cols > 0);
+    let indptr = matrix.row_offsets();
+    let col_idx = matrix.col_indices();
+    let vals = matrix.values();
+
+    // 1) Build new indptr for rows [0..rows)
+    //    We walk each of the first `rows` rows, count how many entries have j < cols.
+    let mut new_indptr = Vec::with_capacity(rows + 1);
+    new_indptr.push(0);
+    let mut nnz_acc = 0;
+    for r in 0..rows {
+        let start = indptr[r];
+        let end = indptr[r + 1];
+        // count valid cols in this row
+        let mut cnt = 0;
+        for &j in &col_idx[start..end] {
+            if j < cols {
+                cnt += 1;
+            }
+        }
+        nnz_acc += cnt;
+        new_indptr.push(nnz_acc);
+    }
+
+    // 2) Allocate storage for indices & data
+    let mut new_cols = Vec::with_capacity(nnz_acc);
+    let mut new_vals = Vec::with_capacity(nnz_acc);
+
+    // 3) Fill them by a second pass
+    for r in 0..rows {
+        let start = indptr[r];
+        let end = indptr[r + 1];
+        for idx in start..end {
+            let j = col_idx[idx];
+            if j < cols {
+                new_cols.push(j);
+                new_vals.push(vals[idx]);
+            }
+        }
+    }
+
+    // 4) Build the new CSR matrix
+    CsrMatrix::try_from_csr_data(rows, cols, new_indptr, new_cols, new_vals)
+        .expect("submatrix dimensions and nnz must be consistent")
 }
 
 pub fn count_zeros(data: DVector<f64>, eps: f64) -> usize {
@@ -732,7 +844,7 @@ mod tests {
         coo_boundary.push(1, 1, -1.0);
         coo_boundary.push(2, 1, 1.0);
         coo_boundary.push(2, 2, 1.0);
-        let boundary_map = SparseMatrix::from(coo_boundary);
+        let boundary_map = CsrMatrix::from(&coo_boundary);
         // Boundary map d1 (edges -> vertices)
         // 3 vertices (rows), 2 edges (columns)
         // Edge 0: Vertex 0 -> 1
@@ -743,14 +855,14 @@ mod tests {
         // 1       1. -1.  0
         // 2      0.   1.  1
         // persistence in the last step in an imagined filtration, where there is one fewer 1-simplex (edge)
-        let up_laplacian = up_laplacian(&boundary_map);
+        let up_laplacian = up_laplacian_transposing(&boundary_map);
         let persistent_up = up_persistent_laplacian_step(up_laplacian.into()).unwrap();
         let mut expected = CooMatrix::new(2, 2);
         expected.push(0, 0, 1.5);
         expected.push(0, 1, -1.5);
         expected.push(1, 0, -1.5);
         expected.push(1, 1, 1.5);
-        assert_eq!(expected, persistent_up.coo)
+        assert_eq!(expected, CooMatrix::from(&persistent_up))
     }
 
     // https://arxiv.org/abs/2312.07563 Example 3.4
@@ -764,8 +876,7 @@ mod tests {
         coo_boundary.push(2, 1, 1.0);
         coo_boundary.push(3, 1, -1.0);
         coo_boundary.push(4, 1, 1.0);
-        let boundary = coo_boundary.into();
-        let up_laplacian = up_laplacian(&boundary).into();
+        let up_laplacian = up_laplacian_transposing(&CsrMatrix::from(&coo_boundary));
         let up_persistent_laplacian = up_persistent_laplacian_step(up_laplacian).unwrap();
 
         let mut expected = CooMatrix::new(4, 4);
@@ -789,10 +900,7 @@ mod tests {
         expected.push(3, 2, -1.0);
         expected.push(3, 3, 1.0);
 
-        assert_eq!(
-            0.5 * CsrMatrix::from(&expected),
-            up_persistent_laplacian.csr
-        );
+        assert_eq!(0.5 * CsrMatrix::from(&expected), up_persistent_laplacian);
     }
 
     fn test_python_lanczos() {

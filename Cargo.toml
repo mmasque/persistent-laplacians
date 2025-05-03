@@ -33,3 +33,6 @@ crate-type = ["cdylib", "rlib"]
 name = "bench_homology"
 path = "benches/homology.rs"
 harness = false
+
+[profile.bench]
+debug = true
