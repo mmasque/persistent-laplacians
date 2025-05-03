@@ -3,7 +3,7 @@ The paper [Persistent Laplacians: properties, algorithms and implications](https
 
 ## Persistent homology 
 
-To evaluate correctness, the nullity of the computed persistent laplacians is computed using SVD on dense matrices. This is the rank of the persistent homology, so it can be cross checked with available implementations (tests use [`gudhi`](https://github.com/GUDHI)). 
+To evaluate correctness, the nullity of the computed persistent laplacians is computed using SVD on dense matrices. This is the rank of the persistent homology, so it can be cross checked with available implementations (tests use [`gudhi`](https://github.com/GUDHI)). This computation is very slow (and dominates the benchmark timing for the larger datasets). The goal is to replace it with Lanczos algorithm for sparse matrices to approximate the smallest eigenvalues. 
 
 ## Compilation, tests, benchmarking 
 Run `maturin develop --release` to build in release mode. You can run `cargo bench` to see benchmarks for an example set of points using the Alpha complex from `gudhi`. For now you'll need to do that in a pip env named `venv` due to hardcoded config. Run `pytest -v python/tests/persistent_homology.py; cargo test` to run tests. 
