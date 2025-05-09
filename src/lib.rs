@@ -1,4 +1,5 @@
 use dashmap::DashMap;
+use homology::compute_homology_from_persistent_laplacian_dense;
 use nalgebra::{DMatrix, DVector};
 use nalgebra_sparse::csr::CsrMatrix;
 use nalgebra_sparse::{CooMatrix, CscMatrix};
@@ -9,7 +10,7 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use sprs::DenseVector;
 use std::cmp::Ordering;
 use std::collections::HashMap;
-
+pub mod homology;
 // Temporary before I find a better solution.
 fn is_float_zero(float: f64) -> bool {
     float.abs() < 1e-15
@@ -337,53 +338,35 @@ fn to_dense(csr: &CsrMatrix<f64>) -> DMatrix<f64> {
     dense
 }
 
-fn compute_homology_from_persistent_laplacian_dense(persistent_laplacian: &DMatrix<f64>) -> usize {
-    assert!(persistent_laplacian.nrows() > 0 && persistent_laplacian.ncols() > 0);
-    let svd = nalgebra::SVD::new(persistent_laplacian.clone(), false, false);
-    let tol = 1e-12;
-    let nullity = svd
-        .singular_values
-        .iter()
-        .filter(|&&sigma| sigma.abs() < tol)
-        .count();
-
-    //and verify A·v ≈ 0 for each nullvector
-    if let Some(vt) = svd.v_t {
-        for &sigma in svd
-            .singular_values
-            .iter()
-            .filter(|&&sigma| sigma.abs() < tol)
-        {
-            // find index i of this sigma, grab the i-th column of V
-            let i = svd
-                .singular_values
-                .iter()
-                .position(|&x| x == sigma)
-                .unwrap();
-            let v = vt.row(i).transpose();
-            let residual = persistent_laplacian.clone() * &v;
-            assert!(
-                residual.norm() < 1e-8,
-                "residual too big: {}",
-                residual.norm()
-            );
-        }
-    }
-    nullity
+#[derive(Clone)]
+pub struct PersistentLaplaciansConfig {
+    pub filtration_indices: Vec<usize>,
 }
 
 // Assumes number of (q) simplices increases by at most 1 on each step of filtration
-pub fn persistent_laplacians_of_filtration(
+pub fn persistent_laplacians_of_filtration<F>(
     sparse_boundary_maps: HashMap<usize, SparseMatrix<f64>>,
     // filtration_index: {q: dimension_q_simplices}
     filt_hash: HashMap<usize, HashMap<usize, usize>>,
-) -> HashMap<usize, HashMap<(usize, usize), usize>> {
+    compute_homology_from_persistent_laplacian: F,
+    config: Option<PersistentLaplaciansConfig>,
+) -> HashMap<usize, HashMap<(usize, usize), usize>>
+where
+    F: Fn(&CsrMatrix<f64>) -> usize,
+{
     // q: {(K, L): eigenvalues of pair K \hookrightarrow L}
     let mut eigenvalues = HashMap::new();
 
-    // Get the filtration indices in descending order
-    let mut filtration_indices: Vec<_> = filt_hash.keys().collect();
+    // Get the filtration indices in descending order (TODO: verify config is valid)
+    let mut filtration_indices =
+        if let Some(filtration_indices) = config.map(|c| c.filtration_indices) {
+            filtration_indices
+        } else {
+            filt_hash.keys().copied().collect()
+        };
+
     filtration_indices.sort_by(|a, b| b.cmp(a));
+    println!("Filtration indices: {:?}", filtration_indices);
     let mut dimensions: Vec<&usize> = sparse_boundary_maps.keys().collect::<Vec<_>>();
     dimensions.sort();
 
@@ -405,77 +388,79 @@ pub fn persistent_laplacians_of_filtration(
         };
         // Initialize results hash of eigenvalues for q-simplices.
         let q_eigenvalues = DashMap::new();
-        filtration_indices
-            .par_iter()
-            .filter(|l| {
-                let dimension_hashmap_l = filt_hash.get(l).unwrap();
-                let num_q_simplices_l = dimension_hashmap_l.get(&q).unwrap();
-                num_q_simplices_l != &0
-            })
-            .for_each(|l| {
-                // for l in &filtration_indices {
-                let dimension_hashmap_l = filt_hash.get(l).unwrap();
-                let num_q_simplices_l = dimension_hashmap_l.get(&q).unwrap();
-                // Only have a boundar y map if there are higher dimensional simplices
-                let num_qp1_simplices_l = dimension_hashmap_l.get(&(q + 1)).unwrap_or(&0);
-                let boundary_map_l_qp1: Option<CsrMatrix<f64>> = if num_qp1_simplices_l > &0 {
-                    Some(
-                        upper_submatrix_csr(
-                            &global_boundary_map_qp1.csr,
-                            *num_q_simplices_l,
-                            *num_qp1_simplices_l,
-                        )
-                        .into(),
+        // For performance evaluation of python's scipy, cannot have par iters, because
+        // Python object from Pyo3 is not sync.
+        // filtration_indices
+        //     .par_iter()
+        //     .filter(|l| {
+        //         let dimension_hashmap_l = filt_hash.get(l).unwrap();
+        //         let num_q_simplices_l = dimension_hashmap_l.get(&q).unwrap();
+        //         num_q_simplices_l != &0
+        //     })
+        //     .for_each(|l| {
+        for l in &filtration_indices {
+            let dimension_hashmap_l = filt_hash.get(l).unwrap();
+            let num_q_simplices_l = dimension_hashmap_l.get(&q).unwrap();
+            // Only have a boundar y map if there are higher dimensional simplices
+            let num_qp1_simplices_l = dimension_hashmap_l.get(&(q + 1)).unwrap_or(&0);
+            let boundary_map_l_qp1: Option<CsrMatrix<f64>> = if num_qp1_simplices_l > &0 {
+                Some(
+                    upper_submatrix_csr(
+                        &global_boundary_map_qp1.csr,
+                        *num_q_simplices_l,
+                        *num_qp1_simplices_l,
                     )
+                    .into(),
+                )
+            } else {
+                None
+            };
+            let mut up_persistent_laplacian =
+                boundary_map_l_qp1.map(|b| up_laplacian_transposing(&b));
+            // For each filtration value lower than the current filtration, compute the persistent laplacian.
+            for k in (0..=*l).rev() {
+                let dimension_hashmap_k = filt_hash.get(&k).unwrap();
+                let num_q_simplices_k = dimension_hashmap_k.get(&q).unwrap();
+                if num_q_simplices_k == &0 {
+                    // The map is always zero, so we don't care
+                    continue;
+                }
+                let num_qm1_simplices_k = dimension_hashmap_k.get(&(q - 1)).unwrap_or(&0);
+                // Compute the up persistent laplacian for K \hookrightarrow L inductively
+                up_persistent_laplacian = up_persistent_laplacian
+                    .map(|u| compute_up_persistent_laplacian(*num_q_simplices_k, u));
+                // Compute the down persistent laplacian for K \hookrightarrow L
+                // If there are no lower simplices, the map factors via the 0 vector space, so it is zero
+                let down_persistent_laplacian = if num_qm1_simplices_k > &0 {
+                    Some(compute_down_persistent_laplacian_transposing(
+                        *num_qm1_simplices_k,
+                        *num_q_simplices_k,
+                        &global_boundary_map_q.csr,
+                    ))
                 } else {
                     None
                 };
-                let mut up_persistent_laplacian =
-                    boundary_map_l_qp1.map(|b| up_laplacian_transposing(&b));
-                // For each filtration value lower than the current filtration, compute the persistent laplacian.
-                for k in (0..=**l).rev() {
-                    let dimension_hashmap_k = filt_hash.get(&k).unwrap();
-                    let num_q_simplices_k = dimension_hashmap_k.get(&q).unwrap();
-                    if num_q_simplices_k == &0 {
-                        // The map is always zero, so we don't care
-                        continue;
-                    }
-                    let num_qm1_simplices_k = dimension_hashmap_k.get(&(q - 1)).unwrap_or(&0);
-                    // Compute the up persistent laplacian for K \hookrightarrow L inductively
-                    up_persistent_laplacian = up_persistent_laplacian
-                        .map(|u| compute_up_persistent_laplacian(*num_q_simplices_k, u));
-                    // Compute the down persistent laplacian for K \hookrightarrow L
-                    // If there are no lower simplices, the map factors via the 0 vector space, so it is zero
-                    let down_persistent_laplacian = if num_qm1_simplices_k > &0 {
-                        Some(compute_down_persistent_laplacian_transposing(
-                            *num_qm1_simplices_k,
-                            *num_q_simplices_k,
-                            &global_boundary_map_q.csr,
-                        ))
-                    } else {
-                        None
-                    };
 
-                    if let Some(persistent_laplacian) =
-                        match (&up_persistent_laplacian, &down_persistent_laplacian) {
-                            (Some(up), Some(down)) => Some(up + down),
-                            (None, None) => None,
-                            (Some(up), None) => Some(up.clone()),
-                            (None, Some(down)) => Some(down.clone()),
-                        }
-                    {
-                        let homology = compute_homology_from_persistent_laplacian_dense(&to_dense(
-                            &persistent_laplacian,
-                        ));
-                        // We don't need to compute for lower K if persistent homology is zero for this pair
-                        if homology == 0 {
-                            break;
-                        }
-                        // let homology = persistent_laplacian.nnz();
-                        q_eigenvalues.insert((k, **l), homology);
+                if let Some(persistent_laplacian) =
+                    match (&up_persistent_laplacian, &down_persistent_laplacian) {
+                        (Some(up), Some(down)) => Some(up + down),
+                        (None, None) => None,
+                        (Some(up), None) => Some(up.clone()),
+                        (None, Some(down)) => Some(down.clone()),
                     }
+                {
+                    let homology =
+                        compute_homology_from_persistent_laplacian(&persistent_laplacian);
+
+                    // We don't need to compute for lower K if persistent homology is zero for this pair
+                    // if homology == 0 {
+                    //     break;
+                    // }
+                    // let homology = persistent_laplacian.nnz();
+                    q_eigenvalues.insert((k, *l), homology);
                 }
-            });
+            }
+        }
         eigenvalues.insert(*q, q_eigenvalues.into_iter().collect());
     }
     eigenvalues
@@ -486,7 +471,12 @@ fn process_tda(py: Python, boundary_maps: &PyDict, filt: &PyDict) -> PyResult<Py
     let sparse_boundary_maps = process_sparse_dict(boundary_maps).unwrap();
 
     let filt_hash = parse_nested_dict(&filt).unwrap();
-    let eigenvalues = persistent_laplacians_of_filtration(sparse_boundary_maps, filt_hash);
+    let eigenvalues = persistent_laplacians_of_filtration(
+        sparse_boundary_maps,
+        filt_hash,
+        compute_homology_from_persistent_laplacian_dense,
+        None,
+    );
     Ok(eigenvalues.into_py(py))
 }
 
@@ -661,56 +651,6 @@ fn upper_submatrix_csr(matrix: &CsrMatrix<f64>, rows: usize, cols: usize) -> Csr
 
 pub fn count_zeros(data: DVector<f64>, eps: f64) -> usize {
     data.iter().filter(|&&x| x.abs() <= eps).count()
-}
-
-pub fn eigsh_scipy(
-    py: Python,
-    A: &CsrMatrix<f64>,
-    k: usize,
-    sigma: Option<f64>,
-    tol: Option<f64>,
-    maxiter: Option<usize>,
-    which: &str,
-) -> PyResult<Vec<f64>> {
-    // 1) Extract CSR data from nalgebra-sparse
-    let (nrows, ncols) = (A.nrows(), A.ncols());
-    let indptr: Vec<usize> = A.row_offsets().iter().cloned().collect();
-    let indices: Vec<usize> = A.col_indices().iter().cloned().collect();
-    let data: Vec<f64> = A.values().iter().cloned().collect();
-
-    // 2) Convert Rust Vecs into NumPy arrays
-    let py_indptr = indptr.into_pyarray(py);
-    let py_indices = indices.into_pyarray(py);
-    let py_data = data.into_pyarray(py);
-
-    // 3) Import scipy.sparse and build csr_matrix
-    let scipy_sparse = PyModule::import(py, "scipy.sparse")?;
-    let csr_matrix = scipy_sparse
-        .getattr("csr_matrix")?
-        .call1(((py_data, py_indices, py_indptr), (nrows, ncols)))?;
-
-    // 4) Import eigsh
-    let eigsh = PyModule::import(py, "scipy.sparse.linalg")?.getattr("eigsh")?;
-
-    let kwargs = PyDict::new(py);
-    kwargs.set_item("k", k)?; // usize → PyLong
-    kwargs.set_item("which", which)?; // &str → PyString
-    if let Some(s) = sigma {
-        kwargs.set_item("sigma", s)?; // f64 → PyFloat
-    }
-    if let Some(t) = tol {
-        kwargs.set_item("tol", t)?;
-    }
-    if let Some(mi) = maxiter {
-        kwargs.set_item("maxiter", mi)?;
-    }
-    let result = eigsh.call((csr_matrix,), Some(kwargs))?;
-
-    // 6) Extract eigenvalues (first element of the result tuple)
-    let eigvals_py: &PyArray1<f64> = result.get_item(0)?.downcast()?;
-    let eigvals = unsafe { eigvals_py.as_slice()?.to_vec() };
-
-    Ok(eigvals)
 }
 
 #[cfg(test)]
@@ -925,9 +865,25 @@ mod tests {
             builder.push(2, 2, 2.0);
 
             let a = CsrMatrix::from(&builder);
+            let eigsh = PyModule::import(py, "scipy.sparse.linalg")
+                .unwrap()
+                .getattr("eigsh")
+                .unwrap();
 
-            let eigs = eigsh_scipy(py, &a, 2, Some(0.00001), None, None, "LM").unwrap();
-            println!("Smallest eigenvalues: {:?}", eigs);
+            let scipy_sparse = PyModule::import(py, "scipy.sparse").unwrap();
+            //     let eigs = eigsh_scipy(
+            //         py,
+            //         &a,
+            //         2,
+            //         Some(0.00001),
+            //         None,
+            //         None,
+            //         "LM",
+            //         eigsh,
+            //         scipy_sparse,
+            //     )
+            //     .unwrap();
+            //     println!("Smallest eigenvalues: {:?}", eigs);
         });
     }
 }

@@ -1,0 +1,3 @@
+[submodule "lanczos"]
+	path = lanczos
+	url = git@github.com:tomerdmnt/lanczos.git
