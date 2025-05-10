@@ -20,11 +20,6 @@ svdlibrs = "0.5.1"
 eigenvalues = "0.4.0"
 lanczos = {path = "lanczos" } 
 
-[dependencies.nalgebra-lapack]
-version = "0.15.0"
-default-features = false
-features = [ "accelerate" ]
-
 [build-dependencies]
 pyo3-build-config = "0.18"
 
