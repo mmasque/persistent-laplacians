@@ -40,6 +40,19 @@ pub fn compute_homology_from_persistent_laplacian_dense(
     nullity
 }
 
+pub fn compute_homology_from_persistent_laplacian_dense_eigen(
+    persistent_laplacian: &CsrMatrix<f64>,
+) -> usize {
+    assert!(persistent_laplacian.nrows() > 0 && persistent_laplacian.ncols() > 0);
+    let dense = to_dense(&persistent_laplacian);
+    dense
+        .symmetric_eigen()
+        .eigenvalues
+        .iter()
+        .filter(|x| is_float_zero(**x))
+        .count()
+}
+
 pub fn compute_homology_from_persistent_laplacian_eigenvalues(
     persistent_laplacian: &CsrMatrix<f64>,
 ) -> usize {

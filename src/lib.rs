@@ -19,8 +19,8 @@ fn is_float_zero(float: f64) -> bool {
 // Sometimes you want them all
 #[derive(Debug, Clone)]
 pub struct SparseMatrix<T> {
-    csc: CscMatrix<T>,
-    csr: CsrMatrix<T>,
+    pub csc: CscMatrix<T>,
+    pub csr: CsrMatrix<T>,
     coo: CooMatrix<T>,
 }
 
@@ -240,7 +240,7 @@ fn up_laplacian(boundary_map_qp1: &SparseMatrix<f64>) -> SparseMatrix<f64> {
     (degree_matrix.csr - adjacency_matrix.csr).into()
 }
 
-fn up_laplacian_transposing(boundary_map_qp1: &CsrMatrix<f64>) -> CsrMatrix<f64> {
+pub fn up_laplacian_transposing(boundary_map_qp1: &CsrMatrix<f64>) -> CsrMatrix<f64> {
     boundary_map_qp1 * boundary_map_qp1.transpose()
 }
 
@@ -283,7 +283,7 @@ fn up_persistent_laplacian_step(
 
 /// Computes the qth up persistent laplacian of a pair of simplicial complexes K hookrightarrow L given the qth up laplacian
 /// of L and the number of q simplices of K.
-fn compute_up_persistent_laplacian(
+pub fn compute_up_persistent_laplacian(
     num_q_simplices_k: usize,
     up_laplacian: CsrMatrix<f64>,
 ) -> CsrMatrix<f64> {
@@ -312,7 +312,7 @@ fn compute_down_persistent_laplacian(
     down_persistent_laplacian
 }
 
-fn compute_down_persistent_laplacian_transposing(
+pub fn compute_down_persistent_laplacian_transposing(
     num_qm1_simplices_k: usize,
     num_q_simplices_k: usize,
     global_boundary_map_q: &CsrMatrix<f64>,
@@ -338,18 +338,12 @@ fn to_dense(csr: &CsrMatrix<f64>) -> DMatrix<f64> {
     dense
 }
 
-#[derive(Clone)]
-pub struct PersistentLaplaciansConfig {
-    pub filtration_indices: Vec<usize>,
-}
-
 // Assumes number of (q) simplices increases by at most 1 on each step of filtration
 pub fn persistent_laplacians_of_filtration<F>(
     sparse_boundary_maps: HashMap<usize, SparseMatrix<f64>>,
     // filtration_index: {q: dimension_q_simplices}
     filt_hash: HashMap<usize, HashMap<usize, usize>>,
     compute_homology_from_persistent_laplacian: F,
-    config: Option<PersistentLaplaciansConfig>,
 ) -> HashMap<usize, HashMap<(usize, usize), usize>>
 where
     F: Fn(&CsrMatrix<f64>) -> usize,
@@ -357,16 +351,8 @@ where
     // q: {(K, L): eigenvalues of pair K \hookrightarrow L}
     let mut eigenvalues = HashMap::new();
 
-    // Get the filtration indices in descending order (TODO: verify config is valid)
-    let mut filtration_indices =
-        if let Some(filtration_indices) = config.map(|c| c.filtration_indices) {
-            filtration_indices
-        } else {
-            filt_hash.keys().copied().collect()
-        };
-
+    let mut filtration_indices: Vec<_> = filt_hash.keys().copied().collect();
     filtration_indices.sort_by(|a, b| b.cmp(a));
-    println!("Filtration indices: {:?}", filtration_indices);
     let mut dimensions: Vec<&usize> = sparse_boundary_maps.keys().collect::<Vec<_>>();
     dimensions.sort();
 
@@ -475,7 +461,6 @@ fn process_tda(py: Python, boundary_maps: &PyDict, filt: &PyDict) -> PyResult<Py
         sparse_boundary_maps,
         filt_hash,
         compute_homology_from_persistent_laplacian_dense,
-        None,
     );
     Ok(eigenvalues.into_py(py))
 }

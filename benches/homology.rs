@@ -1,13 +1,14 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use persistent_laplacians::homology::{
     compute_homology_from_persistent_laplacian_dense,
+    compute_homology_from_persistent_laplacian_dense_eigen,
     compute_homology_from_persistent_laplacian_eigenvalues,
     compute_homology_from_persistent_laplacian_lanczos_crate,
     compute_homology_from_persistent_laplacian_scipy, count_nnz_persistent_laplacian,
     ScipyEigshConfig,
 };
 
-use persistent_laplacians::{persistent_laplacians_of_filtration, PersistentLaplaciansConfig};
+use persistent_laplacians::persistent_laplacians_of_filtration;
 use pyo3::{
     types::{PyList, PyModule},
     Python,
@@ -15,7 +16,7 @@ use pyo3::{
 mod helpers;
 
 fn bench_process_tda(c: &mut Criterion) {
-    let ns = [10];
+    let ns = [10, 20, 30, 40, 50];
     for &d in &[1] {
         let group_name = format!("Persistent laplacian computation for {}-spheres", d);
         let mut group = c.benchmark_group(&group_name);
@@ -35,7 +36,6 @@ fn bench_process_tda(c: &mut Criterion) {
                                 maps,
                                 hash,
                                 count_nnz_persistent_laplacian,
-                                None,
                             );
                             criterion::black_box(eigenvalues);
                         },
@@ -52,13 +52,31 @@ fn bench_process_tda(c: &mut Criterion) {
                             maps,
                             hash,
                             compute_homology_from_persistent_laplacian_dense,
-                            None,
                         );
                         criterion::black_box(eigenvalues);
                     },
                     criterion::BatchSize::SmallInput,
                 )
             });
+
+            // group.bench_with_input(
+            //     criterion::BenchmarkId::new("dense eigen", n),
+            //     &n,
+            //     |b, &_n| {
+            //         b.iter_batched(
+            //             || (sparse_boundary_maps.clone(), filt_hash.clone()),
+            //             |(maps, hash)| {
+            //                 let eigenvalues = persistent_laplacians_of_filtration(
+            //                     maps,
+            //                     hash,
+            //                     compute_homology_from_persistent_laplacian_dense_eigen,
+            //                 );
+            //                 criterion::black_box(eigenvalues);
+            //             },
+            //             criterion::BatchSize::SmallInput,
+            //         )
+            //     },
+            // );
 
             // group.bench_with_input(
             //     criterion::BenchmarkId::new("dense lanczos: eigenvalues crate", n),
@@ -71,7 +89,6 @@ fn bench_process_tda(c: &mut Criterion) {
             //                     maps,
             //                     hash,
             //                     compute_homology_from_persistent_laplacian_eigenvalues,
-            //                     None,
             //                 );
             //                 criterion::black_box(eigenvalues);
             //             },
@@ -80,25 +97,24 @@ fn bench_process_tda(c: &mut Criterion) {
             //     },
             // );
 
-            group.bench_with_input(
-                criterion::BenchmarkId::new("persistent laplacian: lanczos crate", n),
-                &n,
-                |b, &_n| {
-                    b.iter_batched(
-                        || (sparse_boundary_maps.clone(), filt_hash.clone()),
-                        |(maps, hash)| {
-                            let eigenvalues = persistent_laplacians_of_filtration(
-                                maps,
-                                hash,
-                                compute_homology_from_persistent_laplacian_lanczos_crate,
-                                None,
-                            );
-                            criterion::black_box(eigenvalues);
-                        },
-                        criterion::BatchSize::SmallInput,
-                    )
-                },
-            );
+            // group.bench_with_input(
+            //     criterion::BenchmarkId::new("persistent laplacian: lanczos crate", n),
+            //     &n,
+            //     |b, &_n| {
+            //         b.iter_batched(
+            //             || (sparse_boundary_maps.clone(), filt_hash.clone()),
+            //             |(maps, hash)| {
+            //                 let eigenvalues = persistent_laplacians_of_filtration(
+            //                     maps,
+            //                     hash,
+            //                     compute_homology_from_persistent_laplacian_lanczos_crate,
+            //                 );
+            //                 criterion::black_box(eigenvalues);
+            //             },
+            //             criterion::BatchSize::SmallInput,
+            //         )
+            //     },
+            // );
 
             // Python::with_gil(|py| {
             //     let sys = py.import("sys").unwrap();

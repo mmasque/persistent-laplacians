@@ -8,7 +8,7 @@ pyo3 = { version = "0.18", features = ["auto-initialize", "abi3-py38"] }
 numpy = "0.18"
 sprs = "0.11"
 nalgebra-sparse = "0.10.0"
-nalgebra = "0.24"
+nalgebra = { version = "0.24" }
 approx = "0.5.1"
 criterion = { version = "0.5.1", features = ["html_reports"] }
 rand = "0.9.1"
@@ -19,6 +19,11 @@ dashmap = "6.1.0"
 svdlibrs = "0.5.1"
 eigenvalues = "0.4.0"
 lanczos = {path = "lanczos" } 
+
+[dependencies.nalgebra-lapack]
+version = "0.15.0"
+default-features = false
+features = [ "accelerate" ]
 
 [build-dependencies]
 pyo3-build-config = "0.18"
