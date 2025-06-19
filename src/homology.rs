@@ -84,6 +84,20 @@ pub fn count_nnz_persistent_laplacian(persistent_laplacian: &CsrMatrix<f64>) -> 
     persistent_laplacian.nnz()
 }
 
+pub fn compute_eigenvalues_from_persistent_laplacian_primme_crate(
+    persistent_laplacian: &CsrMatrix<f64>,
+) -> usize {
+    assert!(persistent_laplacian.nrows() > 0 && persistent_laplacian.ncols() > 0);
+    println!(
+        "Nonzero values: {}, size: {}",
+        persistent_laplacian.nnz(),
+        persistent_laplacian.ncols()
+    );
+    primme::smallest_nonzero_eigenvalues(persistent_laplacian, 2, 0.0)
+        .iter()
+        .count()
+}
+
 pub struct ScipyEigshConfig<'a> {
     py: Python<'a>,
     k: usize,

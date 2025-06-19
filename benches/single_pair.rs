@@ -6,7 +6,9 @@ use nalgebra_sparse::CsrMatrix;
 use persistent_laplacians::{
     compute_down_persistent_laplacian_transposing, compute_up_persistent_laplacian,
     homology::{
+        compute_eigenvalues_from_persistent_laplacian_primme_crate,
         compute_homology_from_persistent_laplacian_dense,
+        compute_homology_from_persistent_laplacian_dense_eigen,
         compute_homology_from_persistent_laplacian_eigenvalues,
         compute_homology_from_persistent_laplacian_lanczos_crate,
         compute_homology_from_persistent_laplacian_scipy, count_nnz_persistent_laplacian,
@@ -185,12 +187,38 @@ fn bench_process_single_pair_only_homology(c: &mut Criterion) {
                     criterion::BatchSize::SmallInput,
                 )
             });
+            group.bench_with_input(
+                criterion::BenchmarkId::new("dense_eigen", n),
+                &n,
+                |b, &_n| {
+                    b.iter_batched(
+                        || {},
+                        |()| {
+                            let homology =
+                                compute_homology_from_persistent_laplacian_dense_eigen(&persistent);
+                            criterion::black_box(homology);
+                        },
+                        criterion::BatchSize::SmallInput,
+                    )
+                },
+            );
             group.bench_with_input(criterion::BenchmarkId::new("lanczos", n), &n, |b, &_n| {
                 b.iter_batched(
                     || {},
                     |()| {
                         let homology =
                             compute_homology_from_persistent_laplacian_lanczos_crate(&persistent);
+                        criterion::black_box(homology);
+                    },
+                    criterion::BatchSize::SmallInput,
+                )
+            });
+            group.bench_with_input(criterion::BenchmarkId::new("primme", n), &n, |b, &_n| {
+                b.iter_batched(
+                    || {},
+                    |()| {
+                        let homology =
+                            compute_eigenvalues_from_persistent_laplacian_primme_crate(&persistent);
                         criterion::black_box(homology);
                     },
                     criterion::BatchSize::SmallInput,
@@ -239,7 +267,7 @@ fn bench_process_single_pair_only_homology(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    bench_process_single_pair,
+    // bench_process_single_pair,
     bench_process_single_pair_only_homology
 );
 criterion_main!(benches);

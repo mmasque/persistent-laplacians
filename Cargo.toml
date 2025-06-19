@@ -18,7 +18,8 @@ rayon = "1.10.0"
 dashmap = "6.1.0"
 svdlibrs = "0.5.1"
 eigenvalues = "0.4.0"
-lanczos = {path = "lanczos" } 
+lanczos = { path = "lanczos" } 
+primme = { path = "primme-rs" }
 
 [build-dependencies]
 pyo3-build-config = "0.18"
@@ -37,10 +38,10 @@ name = "bench_single_pair"
 path = "benches/single_pair.rs"
 harness = false
 
-[[bench]]
-name = "bench_homology"
-path = "benches/homology.rs"
-harness = false
+# [[bench]]
+# name = "bench_homology"
+# path = "benches/homology.rs"
+# harness = false
 
 [profile.bench]
 debug = true

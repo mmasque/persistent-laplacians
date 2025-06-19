@@ -1,3 +1,6 @@
 [submodule "lanczos"]
 	path = lanczos
 	url = https://github.com/mmasque/lanczos.git
+[submodule "primme-rs"]
+	path = primme-rs
+	url = git@github.com:mmasque/primme-rs.git
