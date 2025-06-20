@@ -17,7 +17,7 @@ mod helpers;
 
 fn bench_process_tda(c: &mut Criterion) {
     let ns = [10, 20, 30, 40, 50];
-    for &d in &[1] {
+    for &d in &[1, 2] {
         let group_name = format!("Persistent laplacian computation for {}-spheres", d);
         let mut group = c.benchmark_group(&group_name);
         group.sample_size(10);

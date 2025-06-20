@@ -587,24 +587,26 @@ fn upper_submatrix(matrix: &CooMatrix<f64>, rows: usize, cols: usize) -> CooMatr
     new_coo
 }
 
-fn upper_submatrix_csr(matrix: &CsrMatrix<f64>, rows: usize, cols: usize) -> CsrMatrix<f64> {
+/// Removes extra zeros.
+pub fn upper_submatrix_csr(matrix: &CsrMatrix<f64>, rows: usize, cols: usize) -> CsrMatrix<f64> {
     assert!(rows > 0 && cols > 0);
     let indptr = matrix.row_offsets();
     let col_idx = matrix.col_indices();
     let vals = matrix.values();
 
     // 1) Build new indptr for rows [0..rows)
-    //    We walk each of the first `rows` rows, count how many entries have j < cols.
     let mut new_indptr = Vec::with_capacity(rows + 1);
     new_indptr.push(0);
     let mut nnz_acc = 0;
     for r in 0..rows {
         let start = indptr[r];
         let end = indptr[r + 1];
-        // count valid cols in this row
         let mut cnt = 0;
-        for &j in &col_idx[start..end] {
-            if j < cols {
+        // Count entries in this row within the column limit and above threshold
+        for idx in start..end {
+            let j = col_idx[idx];
+            let v = vals[idx];
+            if j < cols && !is_float_zero(v) {
                 cnt += 1;
             }
         }
@@ -622,18 +624,18 @@ fn upper_submatrix_csr(matrix: &CsrMatrix<f64>, rows: usize, cols: usize) -> Csr
         let end = indptr[r + 1];
         for idx in start..end {
             let j = col_idx[idx];
-            if j < cols {
+            let v = vals[idx];
+            if j < cols && !is_float_zero(v) {
                 new_cols.push(j);
-                new_vals.push(vals[idx]);
+                new_vals.push(v);
             }
         }
     }
 
-    // 4) Build the new CSR matrix
+    // 4) Build and return the new CSR matrix
     CsrMatrix::try_from_csr_data(rows, cols, new_indptr, new_cols, new_vals)
         .expect("submatrix dimensions and nnz must be consistent")
 }
-
 pub fn count_zeros(data: DVector<f64>, eps: f64) -> usize {
     data.iter().filter(|&&x| x.abs() <= eps).count()
 }

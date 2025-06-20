@@ -33,15 +33,15 @@ name = "persistent_laplacians"
 crate-type = ["cdylib", "rlib"]
 
 
-[[bench]]
-name = "bench_single_pair"
-path = "benches/single_pair.rs"
-harness = false
-
 # [[bench]]
-# name = "bench_homology"
-# path = "benches/homology.rs"
+# name = "bench_single_pair"
+# path = "benches/single_pair.rs"
 # harness = false
+
+[[bench]]
+name = "bench_homology"
+path = "benches/homology.rs"
+harness = false
 
 [profile.bench]
 debug = true
