@@ -12,7 +12,10 @@ use std::collections::HashMap;
 
 use crate::eigenvalues::compute_eigenvalues_from_persistent_laplacian_primme_crate;
 use crate::homology::{eigsh_scipy, ScipyEigshConfig};
-use crate::utils::{is_float_zero, upper_submatrix, upper_submatrix_csr};
+use crate::utils::{
+    drop_last_row_col_csr, is_float_zero, outer_product_last_col_row_csr, upper_submatrix,
+    upper_submatrix_csr,
+};
 pub mod eigenvalues;
 pub mod homology;
 mod utils;
@@ -619,106 +622,6 @@ fn persistent_laplacians(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(process_tda, m)?)?;
     m.add_function(wrap_pyfunction!(smallest_eigenvalue, m)?)?;
     Ok(())
-}
-
-/// Compute the product C[:n]R[:n] of the last column C by the last row R of an n x n matrix,
-/// without the last entry, so returning an (n-1) x (n-1) matrix
-fn outer_product_last_col_row(sparse: &SparseMatrix<f64>) -> CooMatrix<f64> {
-    let csc = &sparse.csc;
-    let csr = &sparse.csr;
-    let n = csc.ncols();
-    assert_eq!(n, csc.nrows());
-    assert_eq!(n, csr.ncols());
-    assert_eq!(n, csr.nrows());
-
-    let col = csc.col(n - 1);
-    let row = csr.row(n - 1);
-
-    let mut coo = CooMatrix::new(n - 1, n - 1);
-
-    for (&i, &v_col) in col.row_indices().iter().zip(col.values()) {
-        if i == n - 1 {
-            continue;
-        }
-        for (&j, &v_row) in row.col_indices().iter().zip(row.values()) {
-            if j == n - 1 {
-                continue;
-            }
-            coo.push(i, j, v_col * v_row);
-        }
-    }
-    coo
-}
-
-fn outer_product_last_col_row_csr(csr: &CsrMatrix<f64>) -> CsrMatrix<f64> {
-    let n = csr.nrows();
-    assert_eq!(n, csr.ncols());
-    let last = n - 1;
-    let indptr = csr.row_offsets();
-    let col_indices = csr.col_indices();
-    let values = csr.values();
-
-    // 1) Extract row = A[last, :]
-    let row_start = indptr[last];
-    let row_end = indptr[last + 1];
-    let row_idxs = &col_indices[row_start..row_end];
-    let row_vals = &values[row_start..row_end];
-
-    // 2) Build a length-n vector of the last column entries v[i] = A[i, last]
-    let mut col_vec = vec![0.0; n];
-    for i in 0..n {
-        let start = indptr[i];
-        let end = indptr[i + 1];
-        // scan that row’s indices for column = last
-        for idx in start..end {
-            if col_indices[idx] == last {
-                col_vec[i] = values[idx];
-                break;
-            }
-        }
-    }
-
-    // 3) Now build the outer product of col_vec[0..n-1] and row_vals[ j < n-1 ]
-    let m = n - 1;
-    // precompute row-nnz and total nnz
-    let row_nnz = row_idxs.iter().take_while(|&&j| j < m).count();
-    // each i with col_vec[i] != 0 contributes row_nnz entries
-    let mut indptr_new = Vec::with_capacity(m + 1);
-    indptr_new.push(0);
-    let mut offset = 0;
-    for i in 0..m {
-        if col_vec[i] != 0.0 {
-            offset += row_nnz;
-        }
-        indptr_new.push(offset);
-    }
-
-    let mut indices = Vec::with_capacity(offset);
-    let mut data = Vec::with_capacity(offset);
-    for i in 0..m {
-        let v = col_vec[i];
-        if v != 0.0 {
-            for (&j, &w) in row_idxs.iter().zip(row_vals.iter()) {
-                if j < m {
-                    indices.push(j);
-                    data.push(v * w);
-                }
-            }
-        }
-    }
-    CsrMatrix::try_from_csr_data(m, m, indptr_new, indices, data).unwrap()
-}
-
-fn drop_last_row_col_coo(matrix: &CooMatrix<f64>) -> CooMatrix<f64> {
-    let nrows = matrix.nrows();
-    let ncols = matrix.ncols();
-    upper_submatrix(matrix, nrows - 1, ncols - 1)
-}
-
-fn drop_last_row_col_csr(matrix: &CsrMatrix<f64>) -> CsrMatrix<f64> {
-    let nrows = matrix.nrows();
-    let ncols = matrix.ncols();
-    upper_submatrix_csr(matrix, nrows - 1, ncols - 1)
 }
 
 #[cfg(test)]
