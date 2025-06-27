@@ -6,7 +6,6 @@ use nalgebra_sparse::CsrMatrix;
 use persistent_laplacians::{
     compute_down_persistent_laplacian_transposing, compute_up_persistent_laplacian,
     homology::{
-        compute_eigenvalues_from_persistent_laplacian_primme_crate,
         compute_homology_from_persistent_laplacian_dense,
         compute_homology_from_persistent_laplacian_dense_eigen,
         compute_homology_from_persistent_laplacian_eigenvalues,
@@ -208,17 +207,6 @@ fn bench_process_single_pair_only_homology(c: &mut Criterion) {
                     |()| {
                         let homology =
                             compute_homology_from_persistent_laplacian_lanczos_crate(&persistent);
-                        criterion::black_box(homology);
-                    },
-                    criterion::BatchSize::SmallInput,
-                )
-            });
-            group.bench_with_input(criterion::BenchmarkId::new("primme", n), &n, |b, &_n| {
-                b.iter_batched(
-                    || {},
-                    |()| {
-                        let homology =
-                            compute_eigenvalues_from_persistent_laplacian_primme_crate(&persistent);
                         criterion::black_box(homology);
                     },
                     criterion::BatchSize::SmallInput,

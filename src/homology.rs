@@ -2,12 +2,12 @@ use eigenvalues::{lanczos::HermitianLanczos, SpectrumTarget};
 use lanczos::{Hermitian, Order};
 use nalgebra_sparse::CsrMatrix;
 use numpy::{IntoPyArray, PyArray1};
-use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use pyo3::{prelude::*, types::PyList};
 
-use crate::{is_float_zero, to_dense};
+use crate::{is_float_zero, to_dense, TOL};
 
-/// Functions to calculate homology and or eigenvalues from persistent laplacian
+/// Functions to calculate homology from persistent laplacian
 pub fn compute_homology_from_persistent_laplacian_scipy(
     persistent_laplacian: &CsrMatrix<f64>,
     scipy_config: &ScipyEigshConfig,
@@ -84,29 +84,15 @@ pub fn count_nnz_persistent_laplacian(persistent_laplacian: &CsrMatrix<f64>) -> 
     persistent_laplacian.nnz()
 }
 
-pub fn compute_eigenvalues_from_persistent_laplacian_primme_crate(
-    persistent_laplacian: &CsrMatrix<f64>,
-) -> usize {
-    assert!(persistent_laplacian.nrows() > 0 && persistent_laplacian.ncols() > 0);
-    println!(
-        "Nonzero values: {}, size: {}",
-        persistent_laplacian.nnz(),
-        persistent_laplacian.ncols()
-    );
-    primme::smallest_nonzero_eigenvalues(persistent_laplacian, 2, 0.0)
-        .iter()
-        .count()
-}
-
 pub struct ScipyEigshConfig<'a> {
-    py: Python<'a>,
-    k: usize,
-    sigma: Option<f64>,
-    tol: Option<f64>,
-    maxiter: Option<usize>,
-    which: &'a str,
-    eigsh: &'a PyAny,
-    scipy_sparse: &'a PyModule,
+    pub py: Python<'a>,
+    pub k: usize,
+    pub sigma: Option<f64>,
+    pub tol: Option<f64>,
+    pub maxiter: Option<usize>,
+    pub which: &'a str,
+    pub eigsh: &'a PyAny,
+    pub scipy_sparse: &'a PyModule,
 }
 
 impl<'a> ScipyEigshConfig<'a> {
@@ -131,9 +117,54 @@ impl<'a> ScipyEigshConfig<'a> {
             scipy_sparse,
         }
     }
+    pub fn default_from_num_nonzero_eigenvalues(
+        num_nonzero_eigenvalues: usize,
+        py: Python,
+    ) -> ScipyEigshConfig {
+        let sys = py.import("sys").unwrap();
+        let path: &PyList = sys.getattr("path").unwrap().downcast().unwrap();
+        path.insert(0, ".venv/lib/python3.10/site-packages")
+            .unwrap();
+        let eigsh = PyModule::import(py, "scipy.sparse.linalg")
+            .unwrap()
+            .getattr("eigsh")
+            .unwrap();
+        let scipy_sparse = PyModule::import(py, "scipy.sparse").unwrap();
+        ScipyEigshConfig::new(
+            py,
+            num_nonzero_eigenvalues,
+            Some(TOL),
+            Some(TOL),
+            None,
+            "LA",
+            &eigsh,
+            &scipy_sparse,
+        )
+    }
+}
+
+fn eigsh_scipy_inner(
+    csr_matrix: &PyAny,
+    scipy_config: &ScipyEigshConfig,
+    kwargs: &PyDict,
+) -> PyResult<Vec<f64>> {
+    let result = scipy_config.eigsh.call((csr_matrix,), Some(kwargs))?;
+    // 6) Extract eigenvalues (first element of the result tuple)
+    let eigvals_py: &PyArray1<f64> = result.get_item(0)?.downcast()?;
+    let mut eigvals = unsafe { eigvals_py.as_slice()?.to_vec() };
+    eigvals = eigvals
+        .iter()
+        .filter(|x| !is_float_zero(**x))
+        .cloned()
+        .collect();
+    Ok(eigvals)
 }
 
 pub fn eigsh_scipy(a: &CsrMatrix<f64>, scipy_config: &ScipyEigshConfig) -> PyResult<Vec<f64>> {
+    // If matrix is zero, exit early
+    if a.nnz() == 0 || a.values().iter().filter(|x| !is_float_zero(**x)).count() == 0 {
+        return Ok(vec![]);
+    }
     // 1) Extract CSR data from nalgebra-sparse
     let (nrows, ncols) = (a.nrows(), a.ncols());
     let indptr: Vec<usize> = a.row_offsets().iter().cloned().collect();
@@ -153,10 +184,10 @@ pub fn eigsh_scipy(a: &CsrMatrix<f64>, scipy_config: &ScipyEigshConfig) -> PyRes
         .call1(((py_data, py_indices, py_indptr), (nrows, ncols)))?;
 
     let kwargs = PyDict::new(scipy_config.py.clone());
-    kwargs.set_item("k", scipy_config.k)?; // usize → PyLong
-    kwargs.set_item("which", scipy_config.which)?; // &str → PyString
+
+    kwargs.set_item("which", scipy_config.which)?;
     if let Some(s) = scipy_config.sigma {
-        kwargs.set_item("sigma", s)?; // f64 → PyFloat
+        kwargs.set_item("sigma", s)?;
     }
     if let Some(t) = scipy_config.tol {
         kwargs.set_item("tol", t)?;
@@ -164,11 +195,23 @@ pub fn eigsh_scipy(a: &CsrMatrix<f64>, scipy_config: &ScipyEigshConfig) -> PyRes
     if let Some(mi) = scipy_config.maxiter {
         kwargs.set_item("maxiter", mi)?;
     }
-    let result = scipy_config.eigsh.call((csr_matrix,), Some(kwargs))?;
 
-    // 6) Extract eigenvalues (first element of the result tuple)
-    let eigvals_py: &PyArray1<f64> = result.get_item(0)?.downcast()?;
-    let eigvals = unsafe { eigvals_py.as_slice()?.to_vec() };
-
-    Ok(eigvals)
+    // Hacky way to get nonzero eigenvalues. TODO: think about something less arbitrary than 10?
+    let mut k = nrows.min(scipy_config.k + 10);
+    let mut nonzero_eigvals = eigsh_scipy_inner(csr_matrix, scipy_config, kwargs)?;
+    let num_obtained_nonzero_eigenvalues = nonzero_eigvals.len();
+    while num_obtained_nonzero_eigenvalues < scipy_config.k && k < nrows {
+        // Increase k
+        k = nrows.min(k + 10);
+        kwargs.set_item("k", k)?;
+        println!(
+            "Found {} nonzero eigenvalues, increasing k to {}.",
+            num_obtained_nonzero_eigenvalues, k
+        );
+        // Compute more eigenvalues
+        nonzero_eigvals = eigsh_scipy_inner(csr_matrix, scipy_config, kwargs)?;
+    }
+    nonzero_eigvals.sort_by(|x, y| x.partial_cmp(y).unwrap());
+    nonzero_eigvals = nonzero_eigvals.into_iter().take(scipy_config.k).collect();
+    Ok(nonzero_eigvals)
 }
