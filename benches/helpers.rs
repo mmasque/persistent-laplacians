@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use persistent_laplacians::{parse_nested_dict, process_sparse_dict, SparseMatrix};
+use persistent_laplacians::{parse_nested_dict, process_sparse_dict, sparse::SparseMatrix};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyModule, PyTuple};
 

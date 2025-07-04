@@ -3,6 +3,8 @@ use persistent_laplacians::eigenvalues::{
     compute_eigenvalues_from_persistent_laplacian_primme_crate, empty,
 };
 use persistent_laplacians::homology::{eigsh_scipy, ScipyEigshConfig};
+
+use persistent_laplacians::laplacians::compute_up_persistent_laplacian;
 use persistent_laplacians::persistent_eigenvalues_of_filtration;
 use pyo3::Python;
 mod helpers;
@@ -24,8 +26,14 @@ fn bench_compute_eigenvalues(c: &mut Criterion) {
                     b.iter_batched(
                         || (sparse_boundary_maps.clone(), filt_hash.clone()),
                         |(maps, hash)| {
-                            let eigenvalues =
-                                persistent_eigenvalues_of_filtration(maps, hash, empty, 1, None);
+                            let eigenvalues = persistent_eigenvalues_of_filtration(
+                                maps,
+                                hash,
+                                compute_up_persistent_laplacian,
+                                empty,
+                                1,
+                                None,
+                            );
                             criterion::black_box(eigenvalues);
                         },
                         criterion::BatchSize::SmallInput,
@@ -70,6 +78,7 @@ fn bench_compute_eigenvalues(c: &mut Criterion) {
                                 let eigenvalues = persistent_eigenvalues_of_filtration(
                                     maps,
                                     hash,
+                                    compute_up_persistent_laplacian,
                                     |matrix, _num_nonzero| {
                                         eigsh_scipy(matrix, &config).unwrap_or(vec![])
                                     },

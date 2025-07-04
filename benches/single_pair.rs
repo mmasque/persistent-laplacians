@@ -1,19 +1,19 @@
 use std::collections::HashMap;
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use lanczos::Hermitian;
 use nalgebra_sparse::CsrMatrix;
 use persistent_laplacians::{
-    compute_down_persistent_laplacian_transposing, compute_up_persistent_laplacian,
     homology::{
         compute_homology_from_persistent_laplacian_dense,
         compute_homology_from_persistent_laplacian_dense_eigen,
-        compute_homology_from_persistent_laplacian_eigenvalues,
         compute_homology_from_persistent_laplacian_lanczos_crate,
-        compute_homology_from_persistent_laplacian_scipy, count_nnz_persistent_laplacian,
-        ScipyEigshConfig,
+        compute_homology_from_persistent_laplacian_scipy, ScipyEigshConfig,
     },
-    up_laplacian_transposing, SparseMatrix,
+    laplacians::{
+        compute_down_persistent_laplacian_transposing, compute_up_persistent_laplacian,
+        up_laplacian_transposing,
+    },
+    sparse::SparseMatrix,
 };
 mod helpers;
 use pyo3::{

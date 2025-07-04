@@ -20,6 +20,7 @@ svdlibrs = "0.5.1"
 eigenvalues = "0.4.0"
 lanczos = { path = "lanczos" } 
 primme = { path = "primme-rs" }
+csv = "1.3.1"
 
 [build-dependencies]
 pyo3-build-config = "0.18"
@@ -32,15 +33,19 @@ pyo3 = { version = "0.18", features = ["auto-initialize"] }
 name = "persistent_laplacians"
 crate-type = ["cdylib", "rlib"]
 
-
 # [[bench]]
 # name = "bench_single_pair"
 # path = "benches/single_pair.rs"
 # harness = false
 
+# [[bench]]
+# name = "bench_homology"
+# path = "benches/homology.rs"
+# harness = false
+
 [[bench]]
-name = "bench_homology"
-path = "benches/homology.rs"
+name = "bench_eigenvalues"
+path = "benches/eigenvalues.rs"
 harness = false
 
 [profile.bench]
