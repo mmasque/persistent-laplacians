@@ -1,5 +1,4 @@
 use crate::{is_float_zero, to_dense, TOL};
-use eigenvalues::{lanczos::HermitianLanczos, SpectrumTarget};
 use lanczos::{Hermitian, Order};
 use nalgebra_sparse::CsrMatrix;
 
@@ -26,23 +25,23 @@ pub fn compute_nonzero_eigenvalues_from_persistent_laplacian_dense(
     nonzero_eigenvalues
 }
 
-pub fn compute_homology_from_persistent_laplacian_eigenvalues(
-    persistent_laplacian: &CsrMatrix<f64>,
-    num_nonzero_eigenvalues: usize,
-) -> Vec<f64> {
-    assert!(persistent_laplacian.nrows() > 0 && persistent_laplacian.ncols() > 0);
-    let dense = to_dense(&persistent_laplacian);
-    let spectrum_target = SpectrumTarget::Lowest;
-    let lanczos = HermitianLanczos::new(dense, 50, spectrum_target).unwrap();
-    let mut nonzero_eigenvalues: Vec<f64> = lanczos
-        .eigenvalues
-        .iter()
-        .filter(|&&sigma| !is_float_zero(sigma))
-        .cloned()
-        .collect();
-    nonzero_eigenvalues.truncate(num_nonzero_eigenvalues);
-    nonzero_eigenvalues
-}
+// pub fn compute_homology_from_persistent_laplacian_eigenvalues(
+//     persistent_laplacian: &CsrMatrix<f64>,
+//     num_nonzero_eigenvalues: usize,
+// ) -> Vec<f64> {
+//     assert!(persistent_laplacian.nrows() > 0 && persistent_laplacian.ncols() > 0);
+//     let dense = to_dense(&persistent_laplacian);
+//     let spectrum_target = SpectrumTarget::Lowest;
+//     let lanczos = HermitianLanczos::new(dense, 50, spectrum_target).unwrap();
+//     let mut nonzero_eigenvalues: Vec<f64> = lanczos
+//         .eigenvalues
+//         .iter()
+//         .filter(|&&sigma| !is_float_zero(sigma))
+//         .cloned()
+//         .collect();
+//     nonzero_eigenvalues.truncate(num_nonzero_eigenvalues);
+//     nonzero_eigenvalues
+// }
 
 pub fn compute_eigenvalues_from_persistent_laplacian_lanczos_crate(
     persistent_laplacian: &CsrMatrix<f64>,

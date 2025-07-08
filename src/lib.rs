@@ -12,8 +12,8 @@ use std::time::Instant;
 use crate::eigenvalues::compute_eigenvalues_from_persistent_laplacian_primme_crate;
 use crate::homology::{eigsh_scipy, ScipyEigshConfig};
 use crate::laplacians::{
-    compute_down_persistent_laplacian_transposing, compute_up_persistent_laplacian,
-    up_laplacian_transposing,
+    compute_down_persistent_laplacian_transposing, compute_up_persistent_laplacian_schur,
+    compute_up_persistent_laplacian_stepwise, up_laplacian_transposing,
 };
 use crate::sparse::*;
 use crate::utils::{is_float_zero, upper_submatrix_csr};
@@ -146,7 +146,7 @@ where
                 let num_qm1_simplices_k = dimension_hashmap_k.get(&(q - 1)).unwrap_or(&0);
                 // Compute the up persistent laplacian for K \hookrightarrow L inductively
                 up_persistent_laplacian = up_persistent_laplacian
-                    .map(|u| compute_up_persistent_laplacian(*num_q_simplices_k, u));
+                    .and_then(|u| compute_up_persistent_laplacian_stepwise(*num_q_simplices_k, u));
                 // Compute the down persistent laplacian for K \hookrightarrow L
                 // If there are no lower simplices, the map factors via the 0 vector space, so it is zero
                 let down_persistent_laplacian = if num_qm1_simplices_k > &0 {
@@ -184,7 +184,6 @@ where
 }
 
 /// Computes some nonzero persistent eigenvalues of a filtration
-/// Assumes number of (q) simplices increases by at most 1 on each step of filtration
 pub fn persistent_eigenvalues_of_filtration<F, G>(
     sparse_boundary_maps: HashMap<usize, SparseMatrix<f64>>,
     // filtration_index: {q: dimension_q_simplices}
@@ -196,7 +195,7 @@ pub fn persistent_eigenvalues_of_filtration<F, G>(
     downsampled_filtration_indices: Option<Vec<usize>>,
 ) -> HashMap<usize, HashMap<(usize, usize), Vec<f64>>>
 where
-    F: Fn(usize, CsrMatrix<f64>) -> CsrMatrix<f64>,
+    F: Fn(usize, CsrMatrix<f64>) -> Option<CsrMatrix<f64>>,
     G: Fn(&CsrMatrix<f64>, usize) -> Vec<f64>,
 {
     // q: {(K, L): eigenvalues of pair K \hookrightarrow L}
@@ -305,7 +304,7 @@ where
                 // Compute the up persistent laplacian for K \hookrightarrow L inductively
                 let instant = Instant::now();
                 up_persistent_laplacian_option = up_persistent_laplacian_option
-                    .map(|u| compute_up_persistent_laplacian(*num_q_simplices_k, u));
+                    .and_then(|u| compute_up_persistent_laplacian(*num_q_simplices_k, u));
                 let elapsed = instant.elapsed().as_secs_f64().to_string();
                 wtr.write_record(&[
                     "u",
@@ -361,15 +360,21 @@ fn process_tda(py: Python, boundary_maps: &PyDict, filt: &PyDict) -> PyResult<Py
 }
 
 #[pyfunction]
-#[pyo3(signature = (boundary_maps, filt, filtration_subsampling=None, use_scipy=false))]
+#[pyo3(signature = (boundary_maps, filt, filtration_subsampling=None, use_scipy=false, use_stepwise_schur=false))]
 fn smallest_eigenvalue(
     py: Python,
     boundary_maps: &PyDict,
     filt: &PyDict,
     filtration_subsampling: Option<Vec<usize>>,
     use_scipy: bool,
+    use_stepwise_schur: bool,
 ) -> PyResult<PyObject> {
     let sparse_boundary_maps = process_sparse_dict(boundary_maps).unwrap();
+    let laplacian_compute = if use_stepwise_schur {
+        compute_up_persistent_laplacian_stepwise
+    } else {
+        compute_up_persistent_laplacian_schur
+    };
 
     let filt_hash = parse_nested_dict(&filt).unwrap();
     let eigenvalues = if use_scipy {
@@ -378,7 +383,7 @@ fn smallest_eigenvalue(
             persistent_eigenvalues_of_filtration(
                 sparse_boundary_maps,
                 filt_hash,
-                compute_up_persistent_laplacian,
+                laplacian_compute,
                 |matrix, _num_nonzero| eigsh_scipy(matrix, &scipy_config).unwrap_or(vec![]),
                 1,
                 filtration_subsampling,
@@ -388,7 +393,7 @@ fn smallest_eigenvalue(
         persistent_eigenvalues_of_filtration(
             sparse_boundary_maps,
             filt_hash,
-            compute_up_persistent_laplacian,
+            laplacian_compute,
             compute_eigenvalues_from_persistent_laplacian_primme_crate,
             1,
             filtration_subsampling,

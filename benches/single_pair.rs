@@ -10,7 +10,7 @@ use persistent_laplacians::{
         compute_homology_from_persistent_laplacian_scipy, ScipyEigshConfig,
     },
     laplacians::{
-        compute_down_persistent_laplacian_transposing, compute_up_persistent_laplacian,
+        compute_down_persistent_laplacian_transposing, compute_up_persistent_laplacian_stepwise,
         up_laplacian_transposing,
     },
     sparse::SparseMatrix,
@@ -32,7 +32,7 @@ fn single_pair_persistent_laplacian(
     let num_0_simplices_k = filt_hash.get(&k).unwrap().get(&0).unwrap();
 
     let up = up_laplacian_transposing(&boundary_2.csr);
-    let up_persistent = compute_up_persistent_laplacian(*num_1_simplices_k, up);
+    let up_persistent = compute_up_persistent_laplacian_stepwise(*num_1_simplices_k, up).unwrap();
 
     let down_persistent = compute_down_persistent_laplacian_transposing(
         *num_0_simplices_k,

@@ -1,4 +1,3 @@
-use eigenvalues::{lanczos::HermitianLanczos, SpectrumTarget};
 use lanczos::{Hermitian, Order};
 use nalgebra_sparse::CsrMatrix;
 use numpy::{IntoPyArray, PyArray1};
@@ -30,7 +29,7 @@ pub fn compute_homology_from_persistent_laplacian_dense(
 ) -> usize {
     assert!(persistent_laplacian.nrows() > 0 && persistent_laplacian.ncols() > 0);
     let dense = to_dense(&persistent_laplacian);
-    let svd = nalgebra::SVD::new(dense, false, false);
+    let svd = nalgebra_sparse::na::SVD::new(dense, false, false);
     let tol = 1e-12;
     let nullity = svd
         .singular_values
@@ -53,19 +52,19 @@ pub fn compute_homology_from_persistent_laplacian_dense_eigen(
         .count()
 }
 
-pub fn compute_homology_from_persistent_laplacian_eigenvalues(
-    persistent_laplacian: &CsrMatrix<f64>,
-) -> usize {
-    assert!(persistent_laplacian.nrows() > 0 && persistent_laplacian.ncols() > 0);
-    let dense = to_dense(&persistent_laplacian);
-    let spectrum_target = SpectrumTarget::Lowest;
-    let lanczos = HermitianLanczos::new(dense, 50, spectrum_target).unwrap();
-    lanczos
-        .eigenvalues
-        .iter()
-        .filter(|x| is_float_zero(**x))
-        .count()
-}
+// pub fn compute_homology_from_persistent_laplacian_eigenvalues(
+//     persistent_laplacian: &CsrMatrix<f64>,
+// ) -> usize {
+//     assert!(persistent_laplacian.nrows() > 0 && persistent_laplacian.ncols() > 0);
+//     let dense = to_dense(&persistent_laplacian);
+//     let spectrum_target = SpectrumTarget::Lowest;
+//     let lanczos = HermitianLanczos::new(dense, 50, spectrum_target).unwrap();
+//     lanczos
+//         .eigenvalues
+//         .iter()
+//         .filter(|x| is_float_zero(**x))
+//         .count()
+// }
 
 pub fn compute_homology_from_persistent_laplacian_lanczos_crate(
     persistent_laplacian: &CsrMatrix<f64>,

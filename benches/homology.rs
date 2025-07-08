@@ -2,7 +2,6 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use persistent_laplacians::homology::{
     compute_homology_from_persistent_laplacian_dense,
     compute_homology_from_persistent_laplacian_dense_eigen,
-    compute_homology_from_persistent_laplacian_eigenvalues,
     compute_homology_from_persistent_laplacian_lanczos_crate,
     compute_homology_from_persistent_laplacian_scipy, count_nnz_persistent_laplacian,
     ScipyEigshConfig,
@@ -78,24 +77,24 @@ fn bench_process_tda(c: &mut Criterion) {
                 },
             );
 
-            group.bench_with_input(
-                criterion::BenchmarkId::new("dense lanczos: eigenvalues crate", n),
-                &n,
-                |b, &_n| {
-                    b.iter_batched(
-                        || (sparse_boundary_maps.clone(), filt_hash.clone()),
-                        |(maps, hash)| {
-                            let eigenvalues = persistent_homology_of_filtration(
-                                maps,
-                                hash,
-                                compute_homology_from_persistent_laplacian_eigenvalues,
-                            );
-                            criterion::black_box(eigenvalues);
-                        },
-                        criterion::BatchSize::SmallInput,
-                    )
-                },
-            );
+            // group.bench_with_input(
+            //     criterion::BenchmarkId::new("dense lanczos: eigenvalues crate", n),
+            //     &n,
+            //     |b, &_n| {
+            //         b.iter_batched(
+            //             || (sparse_boundary_maps.clone(), filt_hash.clone()),
+            //             |(maps, hash)| {
+            //                 let eigenvalues = persistent_homology_of_filtration(
+            //                     maps,
+            //                     hash,
+            //                     compute_homology_from_persistent_laplacian_eigenvalues,
+            //                 );
+            //                 criterion::black_box(eigenvalues);
+            //             },
+            //             criterion::BatchSize::SmallInput,
+            //         )
+            //     },
+            // );
 
             group.bench_with_input(
                 criterion::BenchmarkId::new("persistent laplacian: lanczos crate", n),

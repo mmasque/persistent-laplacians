@@ -4,7 +4,7 @@ use persistent_laplacians::eigenvalues::{
 };
 use persistent_laplacians::homology::{eigsh_scipy, ScipyEigshConfig};
 
-use persistent_laplacians::laplacians::compute_up_persistent_laplacian;
+use persistent_laplacians::laplacians::compute_up_persistent_laplacian_stepwise;
 use persistent_laplacians::persistent_eigenvalues_of_filtration;
 use pyo3::Python;
 mod helpers;
@@ -29,7 +29,7 @@ fn bench_compute_eigenvalues(c: &mut Criterion) {
                             let eigenvalues = persistent_eigenvalues_of_filtration(
                                 maps,
                                 hash,
-                                compute_up_persistent_laplacian,
+                                compute_up_persistent_laplacian_stepwise,
                                 empty,
                                 1,
                                 None,
@@ -78,7 +78,7 @@ fn bench_compute_eigenvalues(c: &mut Criterion) {
                                 let eigenvalues = persistent_eigenvalues_of_filtration(
                                     maps,
                                     hash,
-                                    compute_up_persistent_laplacian,
+                                    compute_up_persistent_laplacian_stepwise,
                                     |matrix, _num_nonzero| {
                                         eigsh_scipy(matrix, &config).unwrap_or(vec![])
                                     },

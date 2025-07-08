@@ -1,11 +1,13 @@
-use std::{cmp::Ordering, time::Instant};
-
-use csv::Writer;
-use nalgebra_sparse::{CooMatrix, CsrMatrix};
+use core::num;
+use nalgebra_sparse::na::{DMatrix, SVD};
+use nalgebra_sparse::{coo, CooMatrix, CsrMatrix};
 use sprs::DenseVector;
+use std::cmp::Ordering;
+use std::time::Instant;
 
+use crate::sparse::split_csr;
 use crate::{
-    sparse::SparseMatrix,
+    sparse::{to_dense, SparseMatrix},
     utils::{
         drop_last_row_col_csr, is_float_zero, outer_product_last_col_row_csr, upper_submatrix,
         upper_submatrix_csr,
@@ -180,80 +182,123 @@ pub fn up_persistent_laplacian_step(
     }
 }
 
-pub fn up_persistent_laplacian_step_timer(
-    prev: CsrMatrix<f64>,
-    mut csv_wtr: &mut Writer<std::fs::File>,
-) -> Option<CsrMatrix<f64>> {
-    let mut row = vec![];
-
-    // 1) get dims
-    let t0 = Instant::now();
-    let dim_prev = prev.ncols();
-    let new_dim = dim_prev.checked_sub(1)?;
-    row.push(("get_dims", t0.elapsed().as_secs_f64()));
-
-    // 2) read bottom‑right
-    let t1 = Instant::now();
-    let (is_zero, br_val) = prev
-        .get_entry(new_dim, new_dim)
-        .map(|x| {
-            let v = x.into_value();
-            (is_float_zero(v), v)
-        })
-        .unwrap_or((true, 0.0));
-    row.push(("read_br", t1.elapsed().as_secs_f64()));
-
-    // 3) drop last row/col
-    let t2 = Instant::now();
-    let base = drop_last_row_col_csr(&prev);
-    row.push(("drop_rc", t2.elapsed().as_secs_f64()));
-
-    // 4) maybe compute outer
-    let result = if !is_zero {
-        let t3 = Instant::now();
-        let outer = outer_product_last_col_row_csr(&prev) / br_val;
-        row.push(("compute_outer", t3.elapsed().as_secs_f64()));
-
-        let t4 = Instant::now();
-        let m = &base - &outer;
-        row.push(("subtract", t4.elapsed().as_secs_f64()));
-        m
-    } else {
-        base
-    };
-
-    // write one CSV row: step_name,time_s
-    for (step, t) in row {
-        csv_wtr.write_record(&[step, &format!("{:.9}", t)]).ok();
-    }
-    csv_wtr.flush().ok();
-
-    Some(result)
-}
-
 /// Computes the qth up persistent laplacian of a pair of simplicial complexes K hookrightarrow L given the qth up laplacian
 /// of L and the number of q simplices of K.
-pub fn compute_up_persistent_laplacian(
+pub fn compute_up_persistent_laplacian_stepwise(
     num_q_simplices_k: usize,
     up_laplacian: CsrMatrix<f64>,
-) -> CsrMatrix<f64> {
+) -> Option<CsrMatrix<f64>> {
     assert!(num_q_simplices_k > 0);
     let lower_by = up_laplacian.ncols() - num_q_simplices_k;
     let mut new_up_persistent_laplacian = up_laplacian;
     // We can only lower by 1 at a time, so if lower_by > 1, we take it step by step
-    println!("LOWER BY: {lower_by}");
-    let mut wtr = Writer::from_path(format!(
-        "timings_up_{}_{}.csv",
-        &new_up_persistent_laplacian.ncols(),
-        num_q_simplices_k
-    ))
-    .unwrap();
-    wtr.write_record(&["step", "time_s"]).unwrap();
     for _ in 1..=lower_by {
         new_up_persistent_laplacian =
-            up_persistent_laplacian_step_timer(new_up_persistent_laplacian, &mut wtr).unwrap();
+            up_persistent_laplacian_step(new_up_persistent_laplacian).unwrap();
     }
-    new_up_persistent_laplacian
+    Some(new_up_persistent_laplacian)
+}
+
+fn pseudoinverse(a: DMatrix<f64>) -> Option<DMatrix<f64>> {
+    let (m, n) = (a.nrows(), a.ncols());
+    // Compute SVD: A = U * Σ * Vᵀ
+    let svd = nalgebra_lapack::SVD::new(a)?;
+    let u = svd.u;
+    let v_t = svd.vt;
+    let sigma = svd.singular_values;
+
+    // Tolerance for treating singular values as zero
+    let max_sigma = sigma.max();
+    let tol = f64::EPSILON * (m.max(n) as f64) * max_sigma;
+
+    // Compute reciprocal of non-zero singular values
+    let sigma_inv = sigma.map(|x| if x > tol { 1.0 / x } else { 0.0 });
+
+    // Build Σ⁺ (n × m)
+    let sigma_inv_mat = DMatrix::from_diagonal(&sigma_inv);
+
+    // Compute A⁺ = V * Σ⁺ * Uᵀ
+    Some(v_t.transpose() * sigma_inv_mat * u.transpose())
+}
+
+fn schur_complement_dense(n: usize, m: DMatrix<f64>) -> Option<DMatrix<f64>> {
+    let total = m.nrows();
+    assert_eq!(total, m.ncols(), "Input must be square");
+    assert!(n < total, "n must be less than matrix dimension");
+    let p = total - n;
+    // Partition blocks
+    let a = m.view((0, 0), (n, n)).into_owned();
+    let b = m.view((0, n), (n, p)).into_owned();
+    let c = m.view((n, 0), (p, n)).into_owned();
+    let d = m.view((n, n), (p, p)).into_owned();
+
+    // Compute pseudoinverse of D
+    let now = Instant::now();
+    let d_pinv = &pseudoinverse(d)?;
+    let elapsed = now.elapsed().as_secs_f64();
+    println!("SCHUR: pseudoinverse: {elapsed}s");
+
+    // Compute C * A⁺ * B
+    let now = Instant::now();
+    let bdc = b * d_pinv * c;
+    let elapsed = now.elapsed().as_secs_f64();
+    println!("SCHUR: mult: {elapsed}s");
+
+    // Schur complement S = D - C A⁺ B
+    let now = Instant::now();
+    let schur = a - bdc;
+    let elapsed = now.elapsed().as_secs_f64();
+    println!("SCHUR: sub: {elapsed}s");
+    Some(schur)
+}
+
+fn schur_complement(n: usize, m: &CsrMatrix<f64>) -> Option<CsrMatrix<f64>> {
+    let total = m.nrows();
+    assert_eq!(total, m.ncols(), "Input must be square");
+    assert!(n < total, "n must be less than matrix dimension");
+
+    let p = total - n;
+    // Partition blocks
+    let now = Instant::now();
+    let (a, b, c, d) = split_csr(&m, n);
+    let elapsed = now.elapsed().as_secs_f64();
+    // println!("SCHUR: partition: {elapsed}s");
+    // Compute pseudoinverse of D
+    let now = Instant::now();
+    let d_pinv = CsrMatrix::from(&CooMatrix::from(&pseudoinverse(to_dense(&d))?));
+    let elapsed = now.elapsed().as_secs_f64();
+    // println!("SCHUR: pseudoinverse: {elapsed}s");
+
+    // Compute C * A⁺ * B
+    let now = Instant::now();
+    let bdc = b * d_pinv * c;
+    let elapsed = now.elapsed().as_secs_f64();
+    // println!("SCHUR: mult: {elapsed}s");
+
+    // Schur complement S = D - C A⁺ B
+    let now = Instant::now();
+    let schur = a - bdc;
+    let elapsed = now.elapsed().as_secs_f64();
+    // println!("SCHUR: sub: {elapsed}s");
+    Some(schur)
+}
+
+pub fn compute_up_persistent_laplacian_schur(
+    num_q_simplices_k: usize,
+    up_laplacian: CsrMatrix<f64>,
+) -> Option<CsrMatrix<f64>> {
+    assert!(num_q_simplices_k > 0);
+    if num_q_simplices_k == up_laplacian.ncols() {
+        return Some(up_laplacian.clone());
+    }
+    let instant = Instant::now();
+    // TODO: now fails quietly when SVD computation fails
+    // let dense = schur_complement_dense(num_q_simplices_k, to_dense(&up_laplacian))?;
+    // let schur = CsrMatrix::from(&CooMatrix::from(&dense));
+    let schur = schur_complement(num_q_simplices_k, &up_laplacian)?;
+    let elapsed = instant.elapsed().as_secs_f64();
+    // println!("SCHUR: {elapsed}s");
+    Some(schur)
 }
 
 fn compute_down_persistent_laplacian(
@@ -292,10 +337,6 @@ mod tests {
 
     use super::*;
     use nalgebra_sparse::{coo::CooMatrix, csr::CsrMatrix};
-    use pyo3::{
-        types::{PyList, PyModule},
-        Python,
-    };
     #[test]
     fn test_up_laplacian_triangle() {
         // Boundary map d1 (edges -> vertices)
@@ -457,12 +498,10 @@ mod tests {
         coo_boundary.push(3, 4, 1.0);
         let boundary_map = CsrMatrix::from(&coo_boundary);
         let up_laplacian = up_laplacian_transposing(&boundary_map);
-        let pers = compute_up_persistent_laplacian(3, up_laplacian);
-        let eigs = compute_eigenvalues_from_persistent_laplacian_primme_crate(&pers, 3);
-        let dense = to_dense(&pers);
-        println!("MATRIX: {}", dense);
-        println!("EIGS: {:?}", eigs);
-        println!("DENSE EIGS: {:?}", dense.eigenvalues())
+        let pers_stepwise =
+            compute_up_persistent_laplacian_stepwise(3, up_laplacian.clone()).unwrap();
+        let pers_schur = compute_up_persistent_laplacian_schur(3, up_laplacian.clone()).unwrap();
+        assert_eq!(pers_stepwise, pers_schur);
     }
 
     // https://arxiv.org/abs/2312.07563 Example 3.4
@@ -501,5 +540,17 @@ mod tests {
         expected.push(3, 3, 1.0);
 
         assert_eq!(0.5 * CsrMatrix::from(&expected), up_persistent_laplacian);
+    }
+
+    #[test]
+    fn test_pseudoinverse() {
+        // Example matrix (2 × 3)
+        let a = DMatrix::<f64>::from_row_slice(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let pinv = pseudoinverse(a.clone()).unwrap();
+        // Check dimensions: should be 3 × 2
+        assert_eq!((pinv.nrows(), pinv.ncols()), (3, 2));
+        // Check Penrose condition A * A⁺ * A ≈ A
+        let approx = &a * &pinv * &a;
+        assert!(approx.relative_eq(&a, 1e-6, 1e-6));
     }
 }
