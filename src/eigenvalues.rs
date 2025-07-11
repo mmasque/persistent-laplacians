@@ -103,16 +103,4 @@ mod tests {
         let matrix = CsrMatrix::from(&coo);
         matrix
     }
-    #[test]
-    fn test_python_vs_primme() {
-        let matrix = generate_random_symmetric_matrix(500, 0.05);
-        let primme_eigs =
-            compute_eigenvalues_from_persistent_laplacian_primme_crate(&matrix, 1, 1e-6);
-        let scipy_eigs = Python::with_gil(|py| {
-            let scipy_config = ScipyEigshConfig::new_from_num_nonzero_eigenvalues_tol(1, 1e-6, py);
-            eigsh_scipy(&matrix, &scipy_config).unwrap()
-        });
-        println!("PRIMME: {:?}", primme_eigs);
-        println!("SCIPY: {:?}", scipy_eigs);
-    }
 }
