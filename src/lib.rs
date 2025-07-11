@@ -24,7 +24,7 @@ pub mod sparse;
 
 mod utils;
 
-pub static TOL: f64 = 1e-6;
+pub static TOL: f64 = 1e-9;
 
 pub fn parse_nested_dict(filt: &PyDict) -> PyResult<HashMap<usize, HashMap<usize, usize>>> {
     let mut filt_map = HashMap::with_capacity(filt.len());

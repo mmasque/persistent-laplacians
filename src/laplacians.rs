@@ -1,6 +1,5 @@
-use core::num;
-use nalgebra_sparse::na::{DMatrix, SVD};
-use nalgebra_sparse::{coo, CooMatrix, CsrMatrix};
+use nalgebra_sparse::na::DMatrix;
+use nalgebra_sparse::{CooMatrix, CsrMatrix};
 use sprs::DenseVector;
 use std::cmp::Ordering;
 use std::time::Instant;
@@ -9,8 +8,7 @@ use crate::sparse::split_csr;
 use crate::{
     sparse::{to_dense, SparseMatrix},
     utils::{
-        drop_last_row_col_csr, is_float_zero, outer_product_last_col_row_csr, upper_submatrix,
-        upper_submatrix_csr,
+        drop_last_row_col_csr, is_float_zero, outer_product_last_col_row_csr, upper_submatrix_csr,
     },
 };
 
@@ -265,6 +263,7 @@ fn schur_complement(n: usize, m: &CsrMatrix<f64>) -> Option<CsrMatrix<f64>> {
     // println!("SCHUR: partition: {elapsed}s");
     // Compute pseudoinverse of D
     let now = Instant::now();
+
     let d_pinv = CsrMatrix::from(&CooMatrix::from(&pseudoinverse(to_dense(&d))?));
     let elapsed = now.elapsed().as_secs_f64();
     // println!("SCHUR: pseudoinverse: {elapsed}s");
@@ -293,12 +292,11 @@ pub fn compute_up_persistent_laplacian_schur(
     }
     let instant = Instant::now();
     // TODO: now fails quietly when SVD computation fails
-    // let dense = schur_complement_dense(num_q_simplices_k, to_dense(&up_laplacian))?;
-    // let schur = CsrMatrix::from(&CooMatrix::from(&dense));
-    let schur = schur_complement(num_q_simplices_k, &up_laplacian)?;
-    let elapsed = instant.elapsed().as_secs_f64();
-    // println!("SCHUR: {elapsed}s");
-    Some(schur)
+    let schur = schur_complement(num_q_simplices_k, &up_laplacian);
+    if schur.is_none() {
+        println!("Failed SVD computation");
+    }
+    Some(schur?)
 }
 
 fn compute_down_persistent_laplacian(
@@ -306,11 +304,11 @@ fn compute_down_persistent_laplacian(
     num_q_simplices_k: usize,
     global_boundary_map_q: &SparseMatrix<f64>,
 ) -> SparseMatrix<f64> {
-    let boundary_map_q_k: CsrMatrix<f64> = CsrMatrix::from(&upper_submatrix(
-        &global_boundary_map_q.coo,
+    let boundary_map_q_k: CsrMatrix<f64> = upper_submatrix_csr(
+        &global_boundary_map_q.csr,
         num_qm1_simplices_k,
         num_q_simplices_k,
-    ));
+    );
     let down_persistent_laplacian = down_laplacian(&SparseMatrix::from(boundary_map_q_k));
     down_persistent_laplacian
 }
@@ -331,12 +329,11 @@ pub fn compute_down_persistent_laplacian_transposing(
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        eigenvalues::compute_eigenvalues_from_persistent_laplacian_primme_crate, sparse::to_dense,
-    };
+    use crate::sparse::to_dense;
 
     use super::*;
     use nalgebra_sparse::{coo::CooMatrix, csr::CsrMatrix};
+    use rand::{rngs::StdRng, Rng, SeedableRng};
     #[test]
     fn test_up_laplacian_triangle() {
         // Boundary map d1 (edges -> vertices)
@@ -545,12 +542,76 @@ mod tests {
     #[test]
     fn test_pseudoinverse() {
         // Example matrix (2 × 3)
-        let a = DMatrix::<f64>::from_row_slice(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let a =
+            DMatrix::<f64>::from_row_slice(3, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
         let pinv = pseudoinverse(a.clone()).unwrap();
-        // Check dimensions: should be 3 × 2
-        assert_eq!((pinv.nrows(), pinv.ncols()), (3, 2));
         // Check Penrose condition A * A⁺ * A ≈ A
         let approx = &a * &pinv * &a;
         assert!(approx.relative_eq(&a, 1e-6, 1e-6));
+    }
+
+    /// Make a random symmetric "Laplacian‑like" CsrMatrix of size n×n.
+    fn random_laplacian(n: usize, seed: u64) -> CsrMatrix<f64> {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut coo = CooMatrix::new(n, n);
+        for i in 0..n {
+            // initial diagonal
+            let diag: f64 = rng.random_range(1.0..5.0);
+            coo.push(i, i, diag);
+            if i + 1 < n {
+                let w: f64 = rng.random_range(0.0..1.0);
+                // off‑diagonals
+                coo.push(i, i + 1, -w);
+                coo.push(i + 1, i, -w);
+                // bump diagonals by w
+                coo.push(i, i, w);
+                coo.push(i + 1, i + 1, w);
+            }
+        }
+        CsrMatrix::from(&coo)
+    }
+
+    /// Assert two sparse mats approx‑equal via their dense forms.
+    fn assert_dense_approx_eq(a: &CsrMatrix<f64>, b: &CsrMatrix<f64>, tol: f64) {
+        let da = to_dense(a);
+        let db = to_dense(b);
+        println!("DA shape: {:?}, DB shape: {:?}", da.shape(), db.shape());
+        assert_eq!(da.shape(), db.shape(), "shape mismatch");
+        assert!(da.relative_eq(&db, tol, tol));
+    }
+
+    #[test]
+    fn no_op_when_k_eq_n() {
+        let lap = random_laplacian(5, 42);
+        let step = compute_up_persistent_laplacian_stepwise(5, lap.clone()).unwrap();
+        let schur = compute_up_persistent_laplacian_schur(5, lap.clone()).unwrap();
+        assert_dense_approx_eq(&step, &lap, 1e-12);
+        assert_dense_approx_eq(&schur, &lap, 1e-12);
+    }
+
+    #[test]
+    fn stepwise_vs_schur_random() {
+        for &(n, k, seed) in &[
+            (6, 3, 0),
+            (7, 5, 1),
+            (8, 2, 123),
+            (10, 7, 999),
+            (1500, 400, 42),
+            (1500, 1000, 43),
+        ] {
+            let base = random_laplacian(n, seed);
+            let step =
+                compute_up_persistent_laplacian_stepwise(k, base.clone()).expect("stepwise failed");
+            let schur =
+                compute_up_persistent_laplacian_schur(k, base.clone()).expect("schur failed");
+            assert_dense_approx_eq(&step, &schur, 1e-8);
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn invalid_k_zero_panics() {
+        let lap = random_laplacian(4, 7);
+        let _ = compute_up_persistent_laplacian_stepwise(0, lap);
     }
 }

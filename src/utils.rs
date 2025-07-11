@@ -8,22 +8,6 @@ pub fn is_float_zero(float: f64) -> bool {
     float.abs() < TOL
 }
 
-/// Take upper left submatrix
-/// rows and cols are the dimensions of the submatrix to take
-/// TODO: maybe take ownership, then early return when rows = nrows, cols = ncols
-pub fn upper_submatrix(matrix: &CooMatrix<f64>, rows: usize, cols: usize) -> CooMatrix<f64> {
-    // Temporary asserts to avoid annoying size bugs
-    assert!(rows > 0);
-    assert!(cols > 0);
-    let mut new_coo = CooMatrix::new(rows, cols);
-    for (i, j, v) in matrix.triplet_iter() {
-        if i < rows && j < cols {
-            new_coo.push(i, j, *v);
-        }
-    }
-    new_coo
-}
-
 /// Removes extra zeros.
 pub fn upper_submatrix_csr(matrix: &CsrMatrix<f64>, rows: usize, cols: usize) -> CsrMatrix<f64> {
     assert!(rows > 0 && cols > 0);
@@ -164,12 +148,6 @@ pub fn outer_product_last_col_row_csr(csr: &CsrMatrix<f64>) -> CsrMatrix<f64> {
         }
     }
     CsrMatrix::try_from_csr_data(m, m, indptr_new, indices, data).unwrap()
-}
-
-pub fn drop_last_row_col_coo(matrix: &CooMatrix<f64>) -> CooMatrix<f64> {
-    let nrows = matrix.nrows();
-    let ncols = matrix.ncols();
-    upper_submatrix(matrix, nrows - 1, ncols - 1)
 }
 
 pub fn drop_last_row_col_csr(matrix: &CsrMatrix<f64>) -> CsrMatrix<f64> {

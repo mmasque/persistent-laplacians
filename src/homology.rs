@@ -132,7 +132,7 @@ impl<'a> ScipyEigshConfig<'a> {
         ScipyEigshConfig::new(
             py,
             num_nonzero_eigenvalues,
-            Some(TOL),
+            Some(TOL * 1e4),
             Some(TOL),
             None,
             "LA",
@@ -195,13 +195,13 @@ pub fn eigsh_scipy(a: &CsrMatrix<f64>, scipy_config: &ScipyEigshConfig) -> PyRes
         kwargs.set_item("maxiter", mi)?;
     }
 
-    // Hacky way to get nonzero eigenvalues. TODO: think about something less arbitrary than 10?
-    let mut k = nrows.min(scipy_config.k + 10);
+    // Hacky way to get nonzero eigenvalues. TODO: think about something less arbitrary
+    let mut k = nrows.min(scipy_config.k + 2);
     let mut nonzero_eigvals = eigsh_scipy_inner(csr_matrix, scipy_config, kwargs)?;
     let num_obtained_nonzero_eigenvalues = nonzero_eigvals.len();
     while num_obtained_nonzero_eigenvalues < scipy_config.k && k < nrows {
         // Increase k
-        k = nrows.min(k + 10);
+        k = nrows.min(k + 2);
         kwargs.set_item("k", k)?;
         println!(
             "Found {} nonzero eigenvalues, increasing k to {}.",
