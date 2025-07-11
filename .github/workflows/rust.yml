@@ -15,9 +15,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Submodule
-      run: git submodule update --init --recursive
+    - name: Checkout with submodules
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+        ssh-key: ${{ secrets.SUBMODULE_SSH_KEY }}
     - name: Build
       run: cargo build --verbose
     - name: Run tests

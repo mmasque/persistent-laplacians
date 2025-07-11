@@ -28,7 +28,8 @@ def test_rust_vs_gudhi(n, d, r, noise, seed):
     # RUST call via maturin
     result = pl.process_tda(
         boundary_matrices,
-        boundary_maps_index_dict
+        boundary_maps_index_dict,
+        1e-6,
     )
     # verification
     barcodes = compute_barcodes(result, unique_filtration_values)
