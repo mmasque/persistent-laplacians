@@ -1,12 +1,12 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use persistent_laplacians::eigenvalues::{
-    compute_eigenvalues_from_persistent_laplacian_primme_crate, empty,
-};
+use persistent_laplacians::eigenvalues::empty;
 use persistent_laplacians::homology::{eigsh_scipy, ScipyEigshConfig};
 
 use persistent_laplacians::laplacians::compute_up_persistent_laplacian_stepwise;
 use persistent_laplacians::persistent_eigenvalues_of_filtration;
 use pyo3::Python;
+
+use crate::helpers::TOL;
 mod helpers;
 
 fn bench_compute_eigenvalues(c: &mut Criterion) {
@@ -33,6 +33,7 @@ fn bench_compute_eigenvalues(c: &mut Criterion) {
                                 empty,
                                 1,
                                 None,
+                                TOL,
                             );
                             criterion::black_box(eigenvalues);
                         },
@@ -71,7 +72,9 @@ fn bench_compute_eigenvalues(c: &mut Criterion) {
                                 (
                                     sparse_boundary_maps.clone(),
                                     filt_hash.clone(),
-                                    ScipyEigshConfig::default_from_num_nonzero_eigenvalues(1, py),
+                                    ScipyEigshConfig::new_from_num_nonzero_eigenvalues_tol(
+                                        1, TOL, py,
+                                    ),
                                 )
                             },
                             |(maps, hash, config)| {
@@ -79,11 +82,12 @@ fn bench_compute_eigenvalues(c: &mut Criterion) {
                                     maps,
                                     hash,
                                     compute_up_persistent_laplacian_stepwise,
-                                    |matrix, _num_nonzero| {
+                                    |matrix, _num_nonzero, _zero_tol| {
                                         eigsh_scipy(matrix, &config).unwrap_or(vec![])
                                     },
                                     1,
                                     None,
+                                    TOL,
                                 );
                                 criterion::black_box(eigenvalues);
                             },

@@ -1,3 +1,4 @@
+use nalgebra::zero;
 use nalgebra_sparse::na::DMatrix;
 use nalgebra_sparse::{CooMatrix, CsrMatrix};
 use sprs::DenseVector;
@@ -156,6 +157,7 @@ fn down_laplacian_transposing(boundary_map_q: &CsrMatrix<f64>) -> CsrMatrix<f64>
 // Implementation of Theorem 5.1 in Memoli, equation 15.
 pub fn up_persistent_laplacian_step(
     prev_up_persistent_laplacian: CsrMatrix<f64>,
+    zero_tol: f64,
 ) -> Option<CsrMatrix<f64>> {
     // If the bottom right entry is zero in our input matrix, then return the previous laplacian
     // without the last row and column.
@@ -166,10 +168,10 @@ pub fn up_persistent_laplacian_step(
     let (bottom_right_is_zero, bottom_right_value) = bottom_right
         .map(|x| {
             let value = x.into_value();
-            (is_float_zero(value), value)
+            (is_float_zero(value, zero_tol), value)
         })
         .unwrap_or((true, 0.0));
-    let exclude_last_row_col = drop_last_row_col_csr(&prev_up_persistent_laplacian);
+    let exclude_last_row_col = drop_last_row_col_csr(&prev_up_persistent_laplacian, zero_tol);
     if !bottom_right_is_zero {
         // prev(i, j) - prev(i, dim_prev) * prev(dim_prev, j) / prev(dim_prev, dim_prev)
         let outer =
@@ -185,6 +187,7 @@ pub fn up_persistent_laplacian_step(
 pub fn compute_up_persistent_laplacian_stepwise(
     num_q_simplices_k: usize,
     up_laplacian: CsrMatrix<f64>,
+    zero_tol: f64,
 ) -> Option<CsrMatrix<f64>> {
     assert!(num_q_simplices_k > 0);
     let lower_by = up_laplacian.ncols() - num_q_simplices_k;
@@ -192,12 +195,12 @@ pub fn compute_up_persistent_laplacian_stepwise(
     // We can only lower by 1 at a time, so if lower_by > 1, we take it step by step
     for _ in 1..=lower_by {
         new_up_persistent_laplacian =
-            up_persistent_laplacian_step(new_up_persistent_laplacian).unwrap();
+            up_persistent_laplacian_step(new_up_persistent_laplacian, zero_tol).unwrap();
     }
     Some(new_up_persistent_laplacian)
 }
 
-fn pseudoinverse(a: DMatrix<f64>) -> Option<DMatrix<f64>> {
+fn pseudoinverse(a: DMatrix<f64>, zero_tol: f64) -> Option<DMatrix<f64>> {
     let (m, n) = (a.nrows(), a.ncols());
     // Compute SVD: A = U * Σ * Vᵀ
     let svd = nalgebra_lapack::SVD::new(a)?;
@@ -207,10 +210,9 @@ fn pseudoinverse(a: DMatrix<f64>) -> Option<DMatrix<f64>> {
 
     // Tolerance for treating singular values as zero
     let max_sigma = sigma.max();
-    let tol = f64::EPSILON * (m.max(n) as f64) * max_sigma;
 
     // Compute reciprocal of non-zero singular values
-    let sigma_inv = sigma.map(|x| if x > tol { 1.0 / x } else { 0.0 });
+    let sigma_inv = sigma.map(|x| if x > zero_tol { 1.0 / x } else { 0.0 });
 
     // Build Σ⁺ (n × m)
     let sigma_inv_mat = DMatrix::from_diagonal(&sigma_inv);
@@ -219,7 +221,7 @@ fn pseudoinverse(a: DMatrix<f64>) -> Option<DMatrix<f64>> {
     Some(v_t.transpose() * sigma_inv_mat * u.transpose())
 }
 
-fn schur_complement_dense(n: usize, m: DMatrix<f64>) -> Option<DMatrix<f64>> {
+fn schur_complement_dense(n: usize, m: DMatrix<f64>, zero_tol: f64) -> Option<DMatrix<f64>> {
     let total = m.nrows();
     assert_eq!(total, m.ncols(), "Input must be square");
     assert!(n < total, "n must be less than matrix dimension");
@@ -232,7 +234,7 @@ fn schur_complement_dense(n: usize, m: DMatrix<f64>) -> Option<DMatrix<f64>> {
 
     // Compute pseudoinverse of D
     let now = Instant::now();
-    let d_pinv = &pseudoinverse(d)?;
+    let d_pinv = &pseudoinverse(d, zero_tol)?;
     let elapsed = now.elapsed().as_secs_f64();
     println!("SCHUR: pseudoinverse: {elapsed}s");
 
@@ -250,49 +252,33 @@ fn schur_complement_dense(n: usize, m: DMatrix<f64>) -> Option<DMatrix<f64>> {
     Some(schur)
 }
 
-fn schur_complement(n: usize, m: &CsrMatrix<f64>) -> Option<CsrMatrix<f64>> {
+fn schur_complement(n: usize, m: &CsrMatrix<f64>, zero_tol: f64) -> Option<CsrMatrix<f64>> {
     let total = m.nrows();
     assert_eq!(total, m.ncols(), "Input must be square");
     assert!(n < total, "n must be less than matrix dimension");
 
-    let p = total - n;
     // Partition blocks
-    let now = Instant::now();
     let (a, b, c, d) = split_csr(&m, n);
-    let elapsed = now.elapsed().as_secs_f64();
-    // println!("SCHUR: partition: {elapsed}s");
     // Compute pseudoinverse of D
-    let now = Instant::now();
-
-    let d_pinv = CsrMatrix::from(&CooMatrix::from(&pseudoinverse(to_dense(&d))?));
-    let elapsed = now.elapsed().as_secs_f64();
-    // println!("SCHUR: pseudoinverse: {elapsed}s");
-
+    let d_pinv = CsrMatrix::from(&CooMatrix::from(&pseudoinverse(to_dense(&d), zero_tol)?));
     // Compute C * A⁺ * B
-    let now = Instant::now();
     let bdc = b * d_pinv * c;
-    let elapsed = now.elapsed().as_secs_f64();
-    // println!("SCHUR: mult: {elapsed}s");
-
     // Schur complement S = D - C A⁺ B
-    let now = Instant::now();
     let schur = a - bdc;
-    let elapsed = now.elapsed().as_secs_f64();
-    // println!("SCHUR: sub: {elapsed}s");
     Some(schur)
 }
 
 pub fn compute_up_persistent_laplacian_schur(
     num_q_simplices_k: usize,
     up_laplacian: CsrMatrix<f64>,
+    zero_tol: f64,
 ) -> Option<CsrMatrix<f64>> {
     assert!(num_q_simplices_k > 0);
     if num_q_simplices_k == up_laplacian.ncols() {
         return Some(up_laplacian.clone());
     }
-    let instant = Instant::now();
     // TODO: now fails quietly when SVD computation fails
-    let schur = schur_complement(num_q_simplices_k, &up_laplacian);
+    let schur = schur_complement(num_q_simplices_k, &up_laplacian, zero_tol);
     if schur.is_none() {
         println!("Failed SVD computation");
     }
@@ -303,11 +289,13 @@ fn compute_down_persistent_laplacian(
     num_qm1_simplices_k: usize,
     num_q_simplices_k: usize,
     global_boundary_map_q: &SparseMatrix<f64>,
+    zero_tol: f64,
 ) -> SparseMatrix<f64> {
     let boundary_map_q_k: CsrMatrix<f64> = upper_submatrix_csr(
         &global_boundary_map_q.csr,
         num_qm1_simplices_k,
         num_q_simplices_k,
+        zero_tol,
     );
     let down_persistent_laplacian = down_laplacian(&SparseMatrix::from(boundary_map_q_k));
     down_persistent_laplacian
@@ -317,11 +305,13 @@ pub fn compute_down_persistent_laplacian_transposing(
     num_qm1_simplices_k: usize,
     num_q_simplices_k: usize,
     global_boundary_map_q: &CsrMatrix<f64>,
+    zero_tol: f64,
 ) -> CsrMatrix<f64> {
     let q_boundary_k = upper_submatrix_csr(
         &global_boundary_map_q,
         num_qm1_simplices_k,
         num_q_simplices_k,
+        zero_tol,
     );
     let down_persistent_laplacian = down_laplacian_transposing(&q_boundary_k);
     down_persistent_laplacian
@@ -472,7 +462,7 @@ mod tests {
         // 2      0.   1.  1
         // persistence in the last step in an imagined filtration, where there is one fewer 1-simplex (edge)
         let up_laplacian = up_laplacian_transposing(&boundary_map);
-        let persistent_up = up_persistent_laplacian_step(up_laplacian.into()).unwrap();
+        let persistent_up = up_persistent_laplacian_step(up_laplacian.into(), 1e-6).unwrap();
         let mut expected = CooMatrix::new(2, 2);
         expected.push(0, 0, 1.5);
         expected.push(0, 1, -1.5);
@@ -496,8 +486,9 @@ mod tests {
         let boundary_map = CsrMatrix::from(&coo_boundary);
         let up_laplacian = up_laplacian_transposing(&boundary_map);
         let pers_stepwise =
-            compute_up_persistent_laplacian_stepwise(3, up_laplacian.clone()).unwrap();
-        let pers_schur = compute_up_persistent_laplacian_schur(3, up_laplacian.clone()).unwrap();
+            compute_up_persistent_laplacian_stepwise(3, up_laplacian.clone(), 1e-6).unwrap();
+        let pers_schur =
+            compute_up_persistent_laplacian_schur(3, up_laplacian.clone(), 1e-6).unwrap();
         assert_eq!(pers_stepwise, pers_schur);
     }
 
@@ -513,7 +504,7 @@ mod tests {
         coo_boundary.push(3, 1, -1.0);
         coo_boundary.push(4, 1, 1.0);
         let up_laplacian = up_laplacian_transposing(&CsrMatrix::from(&coo_boundary));
-        let up_persistent_laplacian = up_persistent_laplacian_step(up_laplacian).unwrap();
+        let up_persistent_laplacian = up_persistent_laplacian_step(up_laplacian, 1e-6).unwrap();
 
         let mut expected = CooMatrix::new(4, 4);
         expected.push(0, 0, 1.0);
@@ -544,7 +535,7 @@ mod tests {
         // Example matrix (2 × 3)
         let a =
             DMatrix::<f64>::from_row_slice(3, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
-        let pinv = pseudoinverse(a.clone()).unwrap();
+        let pinv = pseudoinverse(a.clone(), 1e-6).unwrap();
         // Check Penrose condition A * A⁺ * A ≈ A
         let approx = &a * &pinv * &a;
         assert!(approx.relative_eq(&a, 1e-6, 1e-6));
@@ -583,8 +574,8 @@ mod tests {
     #[test]
     fn no_op_when_k_eq_n() {
         let lap = random_laplacian(5, 42);
-        let step = compute_up_persistent_laplacian_stepwise(5, lap.clone()).unwrap();
-        let schur = compute_up_persistent_laplacian_schur(5, lap.clone()).unwrap();
+        let step = compute_up_persistent_laplacian_stepwise(5, lap.clone(), 1e-6).unwrap();
+        let schur = compute_up_persistent_laplacian_schur(5, lap.clone(), 1e-6).unwrap();
         assert_dense_approx_eq(&step, &lap, 1e-12);
         assert_dense_approx_eq(&schur, &lap, 1e-12);
     }
@@ -600,10 +591,10 @@ mod tests {
             (1500, 1000, 43),
         ] {
             let base = random_laplacian(n, seed);
-            let step =
-                compute_up_persistent_laplacian_stepwise(k, base.clone()).expect("stepwise failed");
+            let step = compute_up_persistent_laplacian_stepwise(k, base.clone(), 1e-6)
+                .expect("stepwise failed");
             let schur =
-                compute_up_persistent_laplacian_schur(k, base.clone()).expect("schur failed");
+                compute_up_persistent_laplacian_schur(k, base.clone(), 1e-6).expect("schur failed");
             assert_dense_approx_eq(&step, &schur, 1e-8);
         }
     }
@@ -612,6 +603,6 @@ mod tests {
     #[should_panic]
     fn invalid_k_zero_panics() {
         let lap = random_laplacian(4, 7);
-        let _ = compute_up_persistent_laplacian_stepwise(0, lap);
+        let _ = compute_up_persistent_laplacian_stepwise(0, lap, 1e-6);
     }
 }

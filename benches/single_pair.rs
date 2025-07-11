@@ -21,6 +21,8 @@ use pyo3::{
     Python,
 };
 
+use crate::helpers::TOL;
+
 fn single_pair_persistent_laplacian(
     sparse_boundary_maps: HashMap<usize, SparseMatrix<f64>>,
     filt_hash: HashMap<usize, HashMap<usize, usize>>,
@@ -32,12 +34,14 @@ fn single_pair_persistent_laplacian(
     let num_0_simplices_k = filt_hash.get(&k).unwrap().get(&0).unwrap();
 
     let up = up_laplacian_transposing(&boundary_2.csr);
-    let up_persistent = compute_up_persistent_laplacian_stepwise(*num_1_simplices_k, up).unwrap();
+    let up_persistent =
+        compute_up_persistent_laplacian_stepwise(*num_1_simplices_k, up, TOL).unwrap();
 
     let down_persistent = compute_down_persistent_laplacian_transposing(
         *num_0_simplices_k,
         *num_1_simplices_k,
         &boundary_1.csr,
+        TOL,
     );
     up_persistent + down_persistent
 }
@@ -83,6 +87,7 @@ fn bench_process_single_pair(c: &mut Criterion) {
                                 let persistent = single_pair_persistent_laplacian(maps, hash, k);
                                 let homology = compute_homology_from_persistent_laplacian_dense(
                                     &criterion::black_box(persistent),
+                                    TOL,
                                 );
                                 criterion::black_box(homology);
                             },
@@ -103,6 +108,7 @@ fn bench_process_single_pair(c: &mut Criterion) {
                                 let homology =
                                     compute_homology_from_persistent_laplacian_lanczos_crate(
                                         &criterion::black_box(persistent),
+                                        TOL,
                                     );
                                 criterion::black_box(homology);
                             },
@@ -112,29 +118,11 @@ fn bench_process_single_pair(c: &mut Criterion) {
                 );
             });
             Python::with_gil(|py| {
-                let sys = py.import("sys").unwrap();
-                let path: &PyList = sys.getattr("path").unwrap().downcast().unwrap();
-                path.insert(0, ".venv/lib/python3.10/site-packages")
-                    .unwrap();
-                let eigsh = PyModule::import(py, "scipy.sparse.linalg")
-                    .unwrap()
-                    .getattr("eigsh")
-                    .unwrap();
-                let scipy_sparse = PyModule::import(py, "scipy.sparse").unwrap();
-
                 group.bench_with_input(criterion::BenchmarkId::new("scipy", n), &n, |b, &_n| {
                     b.iter_batched(
                         || {
-                            let scipy_config = ScipyEigshConfig::new(
-                                py,
-                                10,
-                                Some(0.00001),
-                                None,
-                                None,
-                                "LM",
-                                &eigsh,
-                                &scipy_sparse,
-                            );
+                            let scipy_config =
+                                ScipyEigshConfig::new_from_num_nonzero_eigenvalues_tol(10, TOL, py);
                             return (
                                 sparse_boundary_maps.clone(),
                                 filt_hash.clone(),
@@ -147,6 +135,7 @@ fn bench_process_single_pair(c: &mut Criterion) {
                             let eigenvalues = compute_homology_from_persistent_laplacian_scipy(
                                 &criterion::black_box(persistent),
                                 &scipy_config,
+                                TOL,
                             );
                             criterion::black_box(eigenvalues);
                         },
@@ -180,7 +169,7 @@ fn bench_process_single_pair_only_homology(c: &mut Criterion) {
                     || {},
                     |()| {
                         let homology =
-                            compute_homology_from_persistent_laplacian_dense(&persistent);
+                            compute_homology_from_persistent_laplacian_dense(&persistent, TOL);
                         criterion::black_box(homology);
                     },
                     criterion::BatchSize::SmallInput,
@@ -193,8 +182,10 @@ fn bench_process_single_pair_only_homology(c: &mut Criterion) {
                     b.iter_batched(
                         || {},
                         |()| {
-                            let homology =
-                                compute_homology_from_persistent_laplacian_dense_eigen(&persistent);
+                            let homology = compute_homology_from_persistent_laplacian_dense_eigen(
+                                &persistent,
+                                TOL,
+                            );
                             criterion::black_box(homology);
                         },
                         criterion::BatchSize::SmallInput,
@@ -205,43 +196,28 @@ fn bench_process_single_pair_only_homology(c: &mut Criterion) {
                 b.iter_batched(
                     || {},
                     |()| {
-                        let homology =
-                            compute_homology_from_persistent_laplacian_lanczos_crate(&persistent);
+                        let homology = compute_homology_from_persistent_laplacian_lanczos_crate(
+                            &persistent,
+                            TOL,
+                        );
                         criterion::black_box(homology);
                     },
                     criterion::BatchSize::SmallInput,
                 )
             });
             Python::with_gil(|py| {
-                let sys = py.import("sys").unwrap();
-                let path: &PyList = sys.getattr("path").unwrap().downcast().unwrap();
-                path.insert(0, ".venv/lib/python3.10/site-packages")
-                    .unwrap();
-                let eigsh = PyModule::import(py, "scipy.sparse.linalg")
-                    .unwrap()
-                    .getattr("eigsh")
-                    .unwrap();
-                let scipy_sparse = PyModule::import(py, "scipy.sparse").unwrap();
-
                 group.bench_with_input(criterion::BenchmarkId::new("scipy", n), &n, |b, &_n| {
                     b.iter_batched(
                         || {
-                            let scipy_config = ScipyEigshConfig::new(
-                                py,
-                                2,
-                                Some(0.00001),
-                                None,
-                                Some(50),
-                                "LM",
-                                &eigsh,
-                                &scipy_sparse,
-                            );
+                            let scipy_config =
+                                ScipyEigshConfig::new_from_num_nonzero_eigenvalues_tol(2, TOL, py);
                             return scipy_config;
                         },
                         |scipy_config| {
                             let eigenvalues = compute_homology_from_persistent_laplacian_scipy(
                                 &persistent,
                                 &scipy_config,
+                                TOL,
                             );
                             criterion::black_box(eigenvalues);
                         },

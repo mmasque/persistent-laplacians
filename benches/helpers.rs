@@ -4,6 +4,7 @@ use persistent_laplacians::{parse_nested_dict, process_sparse_dict, sparse::Spar
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyModule, PyTuple};
 
+pub const TOL: f64 = 1e-6;
 pub fn boundary_maps_sphere_from_python(
     n: usize,
     d: usize,

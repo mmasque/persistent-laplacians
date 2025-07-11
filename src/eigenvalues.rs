@@ -1,16 +1,21 @@
-use crate::{is_float_zero, to_dense, TOL};
+use crate::{is_float_zero, to_dense};
 use lanczos::{Hermitian, Order};
 use nalgebra_sparse::CsrMatrix;
 
 /// Functions to calculate eigenvalues from persistent laplacian
 
-pub fn empty(_persistent_laplacian: &CsrMatrix<f64>, _num_eigenvalues: usize) -> Vec<f64> {
+pub fn empty(
+    _persistent_laplacian: &CsrMatrix<f64>,
+    _num_eigenvalues: usize,
+    _zero_tol: f64,
+) -> Vec<f64> {
     vec![]
 }
 
 pub fn compute_nonzero_eigenvalues_from_persistent_laplacian_dense(
     persistent_laplacian: &CsrMatrix<f64>,
     num_nonzero_eigenvalues: usize,
+    zero_tol: f64,
 ) -> Vec<f64> {
     assert!(persistent_laplacian.nrows() > 0 && persistent_laplacian.ncols() > 0);
     let dense = to_dense(&persistent_laplacian);
@@ -18,14 +23,14 @@ pub fn compute_nonzero_eigenvalues_from_persistent_laplacian_dense(
         .symmetric_eigen()
         .eigenvalues
         .iter()
-        .filter(|&&sigma| !is_float_zero(sigma))
+        .filter(|&&sigma| !is_float_zero(sigma, zero_tol))
         .cloned()
         .collect();
     nonzero_eigenvalues.truncate(num_nonzero_eigenvalues);
     nonzero_eigenvalues
 }
 
-// pub fn compute_homology_from_persistent_laplacian_eigenvalues(
+// fn compute_homology_from_persistent_laplacian_eigenvalues(
 //     persistent_laplacian: &CsrMatrix<f64>,
 //     num_nonzero_eigenvalues: usize,
 // ) -> Vec<f64> {
@@ -46,13 +51,14 @@ pub fn compute_nonzero_eigenvalues_from_persistent_laplacian_dense(
 pub fn compute_eigenvalues_from_persistent_laplacian_lanczos_crate(
     persistent_laplacian: &CsrMatrix<f64>,
     num_nonzero_eigenvalues: usize,
+    zero_tol: f64,
 ) -> Vec<f64> {
     assert!(persistent_laplacian.nrows() > 0 && persistent_laplacian.ncols() > 0);
     let eigen = persistent_laplacian.eigsh(50, Order::Smallest);
     let mut nonzero_eigenvalues: Vec<f64> = eigen
         .eigenvalues
         .iter()
-        .filter(|&&sigma| !is_float_zero(sigma))
+        .filter(|&&sigma| !is_float_zero(sigma, zero_tol))
         .cloned()
         .collect();
     nonzero_eigenvalues.truncate(num_nonzero_eigenvalues);
@@ -62,9 +68,10 @@ pub fn compute_eigenvalues_from_persistent_laplacian_lanczos_crate(
 pub fn compute_eigenvalues_from_persistent_laplacian_primme_crate(
     persistent_laplacian: &CsrMatrix<f64>,
     num_nonzero_eigenvalues: usize,
+    zero_tol: f64,
 ) -> Vec<f64> {
     assert!(persistent_laplacian.nrows() > 0 && persistent_laplacian.ncols() > 0);
-    primme::smallest_nonzero_eigenvalues(persistent_laplacian, num_nonzero_eigenvalues, TOL)
+    primme::smallest_nonzero_eigenvalues(persistent_laplacian, num_nonzero_eigenvalues, zero_tol)
         .unwrap_or(vec![])
 }
 
@@ -99,9 +106,10 @@ mod tests {
     #[test]
     fn test_python_vs_primme() {
         let matrix = generate_random_symmetric_matrix(500, 0.05);
-        let primme_eigs = compute_eigenvalues_from_persistent_laplacian_primme_crate(&matrix, 1);
+        let primme_eigs =
+            compute_eigenvalues_from_persistent_laplacian_primme_crate(&matrix, 1, 1e-6);
         let scipy_eigs = Python::with_gil(|py| {
-            let scipy_config = ScipyEigshConfig::default_from_num_nonzero_eigenvalues(1, py);
+            let scipy_config = ScipyEigshConfig::new_from_num_nonzero_eigenvalues_tol(1, 1e-6, py);
             eigsh_scipy(&matrix, &scipy_config).unwrap()
         });
         println!("PRIMME: {:?}", primme_eigs);

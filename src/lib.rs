@@ -17,6 +17,7 @@ use crate::laplacians::{
 };
 use crate::sparse::*;
 use crate::utils::{is_float_zero, upper_submatrix_csr};
+
 pub mod eigenvalues;
 pub mod homology;
 pub mod laplacians;
@@ -24,8 +25,8 @@ pub mod sparse;
 
 mod utils;
 
-pub static TOL: f64 = 1e-9;
-
+/// Parses a nested dictionary from Python into a HashMap of HashMaps.
+/// `filt` is expected to be a dictionary where keys are integers
 pub fn parse_nested_dict(filt: &PyDict) -> PyResult<HashMap<usize, HashMap<usize, usize>>> {
     let mut filt_map = HashMap::with_capacity(filt.len());
 
@@ -79,16 +80,21 @@ pub fn process_sparse_dict(dict: &PyDict) -> PyResult<HashMap<usize, SparseMatri
     Ok(result)
 }
 
-/// Computes persistent homology of a filtration using persistent laplacians
-/// Assumes number of (q) simplices increases by at most 1 on each step of filtration
+/// Computes persistent homology of a filtration using persistent laplacians.
+/// Assumes number of (q) simplices increases by at most 1 on each step of filtration.
+///
+/// `sparse_boundary_maps` is a map from dimension to sparse boundary maps.
+/// `filt_hash` is a map from filtration index to a map of dimension to number of simplices.
+/// `compute_homology_from_persistent_laplacian` is a function that computes homology from a persistent laplacian.
+/// `zero_tol` is a tolerance for considering a floating-point number as zero.
 pub fn persistent_homology_of_filtration<F>(
     sparse_boundary_maps: HashMap<usize, SparseMatrix<f64>>,
-    // filtration_index: {q: dimension_q_simplices}
     filt_hash: HashMap<usize, HashMap<usize, usize>>,
     compute_homology_from_persistent_laplacian: F,
+    zero_tol: f64,
 ) -> HashMap<usize, HashMap<(usize, usize), usize>>
 where
-    F: Fn(&CsrMatrix<f64>) -> usize,
+    F: Fn(&CsrMatrix<f64>, f64) -> usize,
 {
     // q: {(K, L): eigenvalues of pair K \hookrightarrow L}
     let mut homologies = HashMap::new();
@@ -127,6 +133,7 @@ where
                         &global_boundary_map_qp1.csr,
                         *num_q_simplices_l,
                         *num_qp1_simplices_l,
+                        zero_tol,
                     )
                     .into(),
                 )
@@ -145,8 +152,9 @@ where
                 }
                 let num_qm1_simplices_k = dimension_hashmap_k.get(&(q - 1)).unwrap_or(&0);
                 // Compute the up persistent laplacian for K \hookrightarrow L inductively
-                up_persistent_laplacian = up_persistent_laplacian
-                    .and_then(|u| compute_up_persistent_laplacian_stepwise(*num_q_simplices_k, u));
+                up_persistent_laplacian = up_persistent_laplacian.and_then(|u| {
+                    compute_up_persistent_laplacian_stepwise(*num_q_simplices_k, u, zero_tol)
+                });
                 // Compute the down persistent laplacian for K \hookrightarrow L
                 // If there are no lower simplices, the map factors via the 0 vector space, so it is zero
                 let down_persistent_laplacian = if num_qm1_simplices_k > &0 {
@@ -154,6 +162,7 @@ where
                         *num_qm1_simplices_k,
                         *num_q_simplices_k,
                         &global_boundary_map_q.csr,
+                        zero_tol,
                     ))
                 } else {
                     None
@@ -168,7 +177,7 @@ where
                     }
                 {
                     let homology =
-                        compute_homology_from_persistent_laplacian(&persistent_laplacian);
+                        compute_homology_from_persistent_laplacian(&persistent_laplacian, zero_tol);
 
                     // We don't need to compute for lower K if persistent homology is zero for this pair
                     if homology == 0 {
@@ -183,7 +192,15 @@ where
     homologies
 }
 
-/// Computes some nonzero persistent eigenvalues of a filtration
+/// Computes some nonzero persistent eigenvalues of a filtration.
+///
+/// `sparse_boundary_maps` is a map from dimension to sparse boundary maps
+/// `filt_hash` is a map from filtration index to a map of dimension to number of simplices
+/// `compute_up_persistent_laplacian` is a function that computes the up persistent laplacian
+/// `compute_nonzero_eigenvalues` is a function that computes nonzero eigenvalues from a persistent laplacian
+/// `num_nonzero_eigenvalues` is the number of nonzero eigenvalues to compute
+/// `downsampled_filtration_indices` is an optional vector of indices of the filtration to use when downsampling
+/// `zero_tol` is a tolerance for considering a floating-point number as zero
 pub fn persistent_eigenvalues_of_filtration<F, G>(
     sparse_boundary_maps: HashMap<usize, SparseMatrix<f64>>,
     // filtration_index: {q: dimension_q_simplices}
@@ -193,10 +210,11 @@ pub fn persistent_eigenvalues_of_filtration<F, G>(
     num_nonzero_eigenvalues: usize,
     // Indices of the filtration to use when downsampling
     downsampled_filtration_indices: Option<Vec<usize>>,
+    zero_tol: f64,
 ) -> HashMap<usize, HashMap<(usize, usize), Vec<f64>>>
 where
-    F: Fn(usize, CsrMatrix<f64>) -> Option<CsrMatrix<f64>>,
-    G: Fn(&CsrMatrix<f64>, usize) -> Vec<f64>,
+    F: Fn(usize, CsrMatrix<f64>, f64) -> Option<CsrMatrix<f64>>,
+    G: Fn(&CsrMatrix<f64>, usize, f64) -> Vec<f64>,
 {
     // q: {(K, L): eigenvalues of pair K \hookrightarrow L}
     let mut eigenvalues = HashMap::new();
@@ -244,6 +262,7 @@ where
                     *num_qm1_simplices_k,
                     *num_q_simplices_k,
                     &global_boundary_map_q.csr,
+                    zero_tol,
                 );
                 let elapsed = instant.elapsed().as_secs_f64().to_string();
                 wtr.write_record(&[
@@ -255,7 +274,8 @@ where
                 ])
                 .unwrap();
                 let instant = Instant::now();
-                let down_nonzero_eigs = compute_nonzero_eigenvalues(&down, num_nonzero_eigenvalues);
+                let down_nonzero_eigs =
+                    compute_nonzero_eigenvalues(&down, num_nonzero_eigenvalues, zero_tol);
                 let elapsed = instant.elapsed().as_secs_f64().to_string();
                 wtr.write_record(&[
                     "d",
@@ -281,6 +301,7 @@ where
                         &global_boundary_map_qp1.csr,
                         *num_q_simplices_l,
                         *num_qp1_simplices_l,
+                        zero_tol,
                     )
                     .into(),
                 )
@@ -304,7 +325,7 @@ where
                 // Compute the up persistent laplacian for K \hookrightarrow L inductively
                 let instant = Instant::now();
                 up_persistent_laplacian_option = up_persistent_laplacian_option
-                    .and_then(|u| compute_up_persistent_laplacian(*num_q_simplices_k, u));
+                    .and_then(|u| compute_up_persistent_laplacian(*num_q_simplices_k, u, zero_tol));
                 let elapsed = instant.elapsed().as_secs_f64().to_string();
                 wtr.write_record(&[
                     "u",
@@ -319,6 +340,7 @@ where
                     Some(up_persistent_laplacian) => compute_nonzero_eigenvalues(
                         &up_persistent_laplacian,
                         num_nonzero_eigenvalues,
+                        zero_tol,
                     ),
                     None => vec![],
                 };
@@ -346,8 +368,22 @@ where
     eigenvalues
 }
 
+/// Compute persistent homology using persistent Laplacians.
+///
+/// Args:
+///     boundary_maps (dict): A dictionary mapping dimensions to sparse boundary maps.
+///     filt (dict): A nested dictionary mapping filtration steps to simplex counts per dimension.
+///     zero_tol (float): Tolerance below which values are considered zero.
+///
+/// Returns:
+///     dict: A nested dictionary of persistent homology ranks for each pair.
 #[pyfunction]
-fn process_tda(py: Python, boundary_maps: &PyDict, filt: &PyDict) -> PyResult<PyObject> {
+pub fn process_tda(
+    py: Python,
+    boundary_maps: &PyDict,
+    filt: &PyDict,
+    zero_tol: f64,
+) -> PyResult<PyObject> {
     let sparse_boundary_maps = process_sparse_dict(boundary_maps).unwrap();
 
     let filt_hash = parse_nested_dict(&filt).unwrap();
@@ -355,16 +391,29 @@ fn process_tda(py: Python, boundary_maps: &PyDict, filt: &PyDict) -> PyResult<Py
         sparse_boundary_maps,
         filt_hash,
         compute_homology_from_persistent_laplacian_dense,
+        zero_tol,
     );
     Ok(eigenvalues.into_py(py))
 }
 
+/// Computes the smallest nonzero persistent eigenvalue of persistent Laplacians of a filtration.
+///
+/// Args:
+///     boundary_maps (dict): A dictionary mapping dimensions to sparse boundary maps.
+///     filt (dict): A nested dictionary mapping filtration steps to simplex counts per dimension.
+///     zero_tol (float): Tolerance below which values are considered zero.
+///     filtration_subsampling (list, optional): Indices of the filtration to use when downsampling.
+///     use_scipy (bool): If true, uses SciPy's eigsh for eigenvalue computation. Otherwise uses Primme.
+///     use_stepwise_schur (bool): If true, uses stepwise Schur decomposition for up persistent Laplacian computation.
+/// Returns:
+///     dict: A nested dictionary of the smallest nonzero persistent eigenvalue at each filtration pair.
 #[pyfunction]
-#[pyo3(signature = (boundary_maps, filt, filtration_subsampling=None, use_scipy=false, use_stepwise_schur=false))]
-fn smallest_eigenvalue(
+#[pyo3(signature = (boundary_maps, filt, zero_tol, filtration_subsampling=None, use_scipy=false, use_stepwise_schur=false))]
+pub fn smallest_eigenvalue(
     py: Python,
     boundary_maps: &PyDict,
     filt: &PyDict,
+    zero_tol: f64,
     filtration_subsampling: Option<Vec<usize>>,
     use_scipy: bool,
     use_stepwise_schur: bool,
@@ -379,14 +428,18 @@ fn smallest_eigenvalue(
     let filt_hash = parse_nested_dict(&filt).unwrap();
     let eigenvalues = if use_scipy {
         Python::with_gil(|py| {
-            let scipy_config = ScipyEigshConfig::default_from_num_nonzero_eigenvalues(1, py);
+            let scipy_config =
+                ScipyEigshConfig::new_from_num_nonzero_eigenvalues_tol(1, zero_tol, py);
             persistent_eigenvalues_of_filtration(
                 sparse_boundary_maps,
                 filt_hash,
                 laplacian_compute,
-                |matrix, _num_nonzero| eigsh_scipy(matrix, &scipy_config).unwrap_or(vec![]),
+                |matrix, _num_nonzero, _zero_tol| {
+                    eigsh_scipy(matrix, &scipy_config).unwrap_or(vec![])
+                },
                 1,
                 filtration_subsampling,
+                zero_tol,
             )
         })
     } else {
@@ -397,6 +450,7 @@ fn smallest_eigenvalue(
             compute_eigenvalues_from_persistent_laplacian_primme_crate,
             1,
             filtration_subsampling,
+            zero_tol,
         )
     };
     Ok(eigenvalues.into_py(py))

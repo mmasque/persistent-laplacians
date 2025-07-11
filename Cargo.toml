@@ -33,15 +33,15 @@ pyo3 = { version = "0.18", features = ["auto-initialize"] }
 name = "persistent_laplacians"
 crate-type = ["cdylib", "rlib"]
 
-# [[bench]]
-# name = "bench_single_pair"
-# path = "benches/single_pair.rs"
-# harness = false
+[[bench]]
+name = "bench_single_pair"
+path = "benches/single_pair.rs"
+harness = false
 
-# [[bench]]
-# name = "bench_homology"
-# path = "benches/homology.rs"
-# harness = false
+[[bench]]
+name = "bench_homology"
+path = "benches/homology.rs"
+harness = false
 
 [[bench]]
 name = "bench_eigenvalues"

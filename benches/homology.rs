@@ -12,6 +12,8 @@ use pyo3::{
     types::{PyList, PyModule},
     Python,
 };
+
+use crate::helpers::TOL;
 mod helpers;
 
 fn bench_process_tda(c: &mut Criterion) {
@@ -35,6 +37,7 @@ fn bench_process_tda(c: &mut Criterion) {
                                 maps,
                                 hash,
                                 count_nnz_persistent_laplacian,
+                                TOL,
                             );
                             criterion::black_box(eigenvalues);
                         },
@@ -51,6 +54,7 @@ fn bench_process_tda(c: &mut Criterion) {
                             maps,
                             hash,
                             compute_homology_from_persistent_laplacian_dense,
+                            TOL,
                         );
                         criterion::black_box(eigenvalues);
                     },
@@ -69,6 +73,7 @@ fn bench_process_tda(c: &mut Criterion) {
                                 maps,
                                 hash,
                                 compute_homology_from_persistent_laplacian_dense_eigen,
+                                TOL,
                             );
                             criterion::black_box(eigenvalues);
                         },
@@ -107,6 +112,7 @@ fn bench_process_tda(c: &mut Criterion) {
                                 maps,
                                 hash,
                                 compute_homology_from_persistent_laplacian_lanczos_crate,
+                                TOL,
                             );
                             criterion::black_box(eigenvalues);
                         },
@@ -129,16 +135,8 @@ fn bench_process_tda(c: &mut Criterion) {
                 group.bench_with_input(criterion::BenchmarkId::new("scipy", n), &n, |b, &_n| {
                     b.iter_batched(
                         || {
-                            let scipy_config = ScipyEigshConfig::new(
-                                py,
-                                2,
-                                Some(0.00001),
-                                None,
-                                Some(50),
-                                "LM",
-                                &eigsh,
-                                &scipy_sparse,
-                            );
+                            let scipy_config =
+                                ScipyEigshConfig::new_from_num_nonzero_eigenvalues_tol(2, TOL, py);
                             return (
                                 sparse_boundary_maps.clone(),
                                 filt_hash.clone(),
@@ -146,9 +144,18 @@ fn bench_process_tda(c: &mut Criterion) {
                             );
                         },
                         |(maps, hash, scipy_config)| {
-                            let eigenvalues = persistent_homology_of_filtration(maps, hash, |p| {
-                                compute_homology_from_persistent_laplacian_scipy(p, &scipy_config)
-                            });
+                            let eigenvalues = persistent_homology_of_filtration(
+                                maps,
+                                hash,
+                                |p, _zero_tol| {
+                                    compute_homology_from_persistent_laplacian_scipy(
+                                        p,
+                                        &scipy_config,
+                                        TOL,
+                                    )
+                                },
+                                TOL,
+                            );
                             criterion::black_box(eigenvalues);
                         },
                         criterion::BatchSize::SmallInput,
