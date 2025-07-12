@@ -280,7 +280,10 @@ pub fn compute_up_persistent_laplacian_schur(
     // TODO: now fails quietly when SVD computation fails
     let schur = schur_complement(num_q_simplices_k, &up_laplacian, zero_tol);
     if schur.is_none() {
-        println!("Failed SVD computation");
+        println!(
+            "Failed SVD computation for {num_q_simplices_k} to {}.",
+            up_laplacian.ncols()
+        );
     }
     Some(schur?)
 }

@@ -139,13 +139,12 @@ impl<'a> ScipyEigshConfig<'a> {
             .getattr("eigsh")
             .unwrap();
         let scipy_sparse = PyModule::import(py, "scipy.sparse").unwrap();
-        // We want to find eigenvalues at least zero_tol away from zero,
-        // so we set sigma to be zero_tol and the solver's tolerance a bit smaller.
         ScipyEigshConfig::new(
             py,
             num_nonzero_eigenvalues,
-            Some(tol),
-            tol * 1e-2,
+            // TODO: make configurable
+            Some(1e-2),
+            tol,
             None,
             "LA",
             &eigsh,
