@@ -1,6 +1,3 @@
-import gudhi as gd
-import tadasets
-from persistent_laplacians.filtrations import simplices_by_dimension, compute_boundary_matrices, filtration_hash_map
 from persistent_laplacians.data import sphere_data
 from persistent_laplacians.barcodes import compute_barcodes
 from persistent_laplacians import persistent_laplacians as pl
@@ -46,4 +43,3 @@ def test_rust_vs_gudhi(n, d, r, noise, seed):
     unique_gudhi = sorted(list(set(gudhi_persistence)))
     unique_persistence = sorted(list(set(barcodes)))
     assert unique_gudhi == unique_persistence, f"Mismatch for dsphere(n={n},d={d},r={r},noise={noise},seed={seed})"
-
