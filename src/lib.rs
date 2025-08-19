@@ -9,7 +9,11 @@ use pyo3::types::PyDict;
 use std::collections::HashMap;
 use std::time::Instant;
 
-use crate::eigenvalues::compute_eigenvalues_from_persistent_laplacian_primme_crate;
+use crate::eigenvalues::{
+    compute_nonzero_eigenvalues_from_persistent_laplacian_dense,
+    compute_nonzero_eigenvalues_from_persistent_laplacian_scipy,
+};
+// use crate::eigenvalues::compute_eigenvalues_from_persistent_laplacian_primme_crate;
 use crate::homology::{eigsh_scipy, ScipyEigshConfig};
 use crate::laplacians::{
     compute_down_persistent_laplacian_transposing, compute_up_persistent_laplacian_schur,
@@ -224,7 +228,6 @@ where
     filtration_indices.sort_by(|a, b| b.cmp(a));
     let mut dimensions: Vec<&usize> = sparse_boundary_maps.keys().collect::<Vec<_>>();
     dimensions.sort();
-
     // dimension hashmap: q: dim of C_q at filtration indices
     for q in dimensions {
         let mut wtr = Writer::from_path(format!("timings_{}.csv", q)).unwrap();
@@ -403,7 +406,7 @@ pub fn process_tda(
 ///     filt (dict): A nested dictionary mapping filtration steps to simplex counts per dimension.
 ///     zero_tol (float): Tolerance below which values are considered zero.
 ///     filtration_subsampling (list, optional): Indices of the filtration to use when downsampling.
-///     use_scipy (bool): If true, uses SciPy's eigsh for eigenvalue computation. Otherwise uses Primme.
+///     use_scipy (bool): If true, uses SciPy's eigsh for eigenvalue computation. Otherwise uses dense computation.
 ///     use_stepwise_schur (bool): If true, uses stepwise Schur decomposition for up persistent Laplacian computation.
 /// Returns:
 ///     dict: A nested dictionary of the smallest nonzero persistent eigenvalue at each filtration pair.
@@ -435,7 +438,10 @@ pub fn smallest_eigenvalue(
                 filt_hash,
                 laplacian_compute,
                 |matrix, _num_nonzero, _zero_tol| {
-                    eigsh_scipy(matrix, &scipy_config).unwrap_or(vec![])
+                    compute_nonzero_eigenvalues_from_persistent_laplacian_scipy(
+                        matrix,
+                        &scipy_config,
+                    )
                 },
                 1,
                 filtration_subsampling,
@@ -447,7 +453,7 @@ pub fn smallest_eigenvalue(
             sparse_boundary_maps,
             filt_hash,
             laplacian_compute,
-            compute_eigenvalues_from_persistent_laplacian_primme_crate,
+            compute_nonzero_eigenvalues_from_persistent_laplacian_dense,
             1,
             filtration_subsampling,
             zero_tol,

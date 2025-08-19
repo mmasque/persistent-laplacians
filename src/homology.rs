@@ -211,14 +211,16 @@ pub fn eigsh_scipy(a: &CsrMatrix<f64>, scipy_config: &ScipyEigshConfig) -> PyRes
 
     // Compute more eigenvalues than we need, throw away zero eigenvalues, and recompute if needed.
     let mut k = nrows.min(2 * scipy_config.k);
+    kwargs.set_item("k", k)?;
     let mut nonzero_eigvals = eigsh_scipy_inner(csr_matrix, scipy_config, kwargs)?;
-    let num_obtained_nonzero_eigenvalues = nonzero_eigvals.len();
+    let mut num_obtained_nonzero_eigenvalues = nonzero_eigvals.len();
     while num_obtained_nonzero_eigenvalues < scipy_config.k && k < nrows {
         // Increase k
         k = nrows.min(k * 2);
         kwargs.set_item("k", k)?;
         // Compute more eigenvalues
         nonzero_eigvals = eigsh_scipy_inner(csr_matrix, scipy_config, kwargs)?;
+        num_obtained_nonzero_eigenvalues = nonzero_eigvals.len();
     }
     nonzero_eigvals.sort_by(|x, y| x.partial_cmp(y).unwrap());
     nonzero_eigvals = nonzero_eigvals.into_iter().take(scipy_config.k).collect();
