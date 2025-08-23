@@ -4,25 +4,30 @@ import gudhi as gd
 
 import bisect
 
+
 def get_filtration_data(data, num_indices=None):
     alpha = gd.AlphaComplex(points=data)
     st = alpha.create_simplex_tree()
     filtration = list(st.get_filtration())
     unique_filtration_values = sorted(list(set([f for (_, f) in filtration])))
     simplices_by_dim, simplices_by_dim_only_filt = simplices_by_dimension(filtration)
-    print(simplices_by_dim_only_filt)
     boundary_matrices = compute_boundary_matrices(simplices_by_dim)
-    boundary_maps_index_dict = filtration_hash_map(filtration, simplices_by_dim_only_filt)
+    boundary_maps_index_dict = filtration_hash_map(
+        filtration, simplices_by_dim_only_filt
+    )
     if num_indices is None:
-        num_indices = len(unique_filtration_values) 
-    subsampled_filtration_indices = _sample_n_values(range(len(unique_filtration_values)), num_indices)
-    print(boundary_maps_index_dict)
+        num_indices = len(unique_filtration_values)
+    subsampled_filtration_indices = _sample_n_values(
+        range(len(unique_filtration_values)), num_indices
+    )
     return boundary_matrices, boundary_maps_index_dict, subsampled_filtration_indices
+
 
 def get_subsampled_filtration_indices(unique_filtration_values, num_indices):
     if num_indices is None:
-        num_indices = len(unique_filtration_values) 
+        num_indices = len(unique_filtration_values)
     return _sample_n_values(range(len(unique_filtration_values)), num_indices)
+
 
 def _sample_n_values(arr, n):
     arr = np.array(arr)

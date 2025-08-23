@@ -5,13 +5,16 @@ from collections import defaultdict
 
 from persistent_laplacians.filtrations import get_subsampled_filtration_indices
 
+
 def get_filtration_data(data, num_indices=None):
     cc = gudhi.CubicalComplex(top_dimensional_cells=data)
     cells = cc.all_cells()
     boundary_matrices = compute_boundary_matrices(cells)
     boundary_maps_index_dict = get_boundary_maps_index_dict(cells)
-    subsampled_filtration_indices = get_subsampled_filtration_indices(sorted(np.unique(cells)), num_indices)
-    return boundary_matrices, boundary_maps_index_dict, subsampled_filtration_indices 
+    subsampled_filtration_indices = get_subsampled_filtration_indices(
+        sorted(np.unique(cells)), num_indices
+    )
+    return boundary_matrices, boundary_maps_index_dict, subsampled_filtration_indices
 
 
 def compute_cell_dimension(coord):
@@ -34,7 +37,7 @@ def cell_faces(coord):
 
     Args:
         coord (tuple of int): the cell's index in the bitmap grid.
-    
+
     Returns:
         List[tuple]: list of face coordinate tuples.
     """
@@ -71,6 +74,7 @@ def cell_face_orientation_old(coord, face_coord):
         return delta
     else:
         return delta * (-1) ** axis
+
 
 def cell_face_orientation(coord, face_coord):
     """
@@ -109,8 +113,8 @@ def cell_boundary_indices(coord):
 
 def get_sorted_cell_indices(cell_filtration):
     """
-    Given a cell filtration (a numpy array of all cells in bitmap format), 
-    returns a dictionary of dimension: dictionary, 
+    Given a cell filtration (a numpy array of all cells in bitmap format),
+    returns a dictionary of dimension: dictionary,
     where each dictionary maps cell indices to their index in the sorted list of cells of that dimension.
     """
     dim_cells = {}
@@ -125,6 +129,7 @@ def get_sorted_cell_indices(cell_filtration):
         sorted_cells = sorted(cells)
         flat_index[d] = {idx: i for i, (_, idx) in enumerate(sorted_cells)}
     return flat_index
+
 
 def get_boundary_maps_index_dict(cell_filtration):
     """
@@ -147,13 +152,14 @@ def get_boundary_maps_index_dict(cell_filtration):
     boundary_maps_index_dict = {}
     for f in all_steps:
         counts = {}
-        for d in range(max_dim+1):
+        for d in range(max_dim + 1):
             steps = dim_to_steps.get(d, [])
             # bisect_right gives number ≤ f
             counts[d] = bisect_right(steps, f)
         boundary_maps_index_dict[f] = counts
 
     return boundary_maps_index_dict
+
 
 def initialize_boundary_matrices(sorted_cell_indices):
     """
@@ -173,7 +179,7 @@ def initialize_boundary_matrices(sorted_cell_indices):
             "n_cols": num_cells,
             "data": np.array([], dtype=float),
             "rows": np.array([], dtype=int),
-            "cols": np.array([], dtype=int)
+            "cols": np.array([], dtype=int),
         }
     return boundary_matrices
 
@@ -208,30 +214,50 @@ def compute_boundary_matrices(cells):
         for face, orientation in cell_boundaries:
             face_dimension = compute_cell_dimension(face)
             flat_face_index = sorted_cell_indices[face_dimension][face]
-            boundary_matrices[cell_dimension]["data"] = np.append(boundary_matrices[cell_dimension]["data"], orientation)
-            boundary_matrices[cell_dimension]["rows"] = np.append(boundary_matrices[cell_dimension]["rows"], flat_face_index)
-            boundary_matrices[cell_dimension]["cols"] = np.append(boundary_matrices[cell_dimension]["cols"], flat_cell_index)
-    
+            boundary_matrices[cell_dimension]["data"] = np.append(
+                boundary_matrices[cell_dimension]["data"], orientation
+            )
+            boundary_matrices[cell_dimension]["rows"] = np.append(
+                boundary_matrices[cell_dimension]["rows"], flat_face_index
+            )
+            boundary_matrices[cell_dimension]["cols"] = np.append(
+                boundary_matrices[cell_dimension]["cols"], flat_cell_index
+            )
+
     return boundary_matrices
 
+
 import unittest
+
 
 class TestCubicalFunctions(unittest.TestCase):
 
     def test_compute_cell_dimension(self):
-        self.assertEqual(compute_cell_dimension((0,0,0)), 0)
-        self.assertEqual(compute_cell_dimension((1,0,0)), 1)
-        self.assertEqual(compute_cell_dimension((1,1,0)), 2)
+        self.assertEqual(compute_cell_dimension((0, 0, 0)), 0)
+        self.assertEqual(compute_cell_dimension((1, 0, 0)), 1)
+        self.assertEqual(compute_cell_dimension((1, 1, 0)), 2)
 
     def test_get_sorted_cell_indices(self):
-        arr = np.array([0.2,0.1,0.3,0.11, 0.21])
+        arr = np.array([0.2, 0.1, 0.3, 0.11, 0.21])
         flat = get_sorted_cell_indices(arr)
-        self.assertDictEqual(flat, {0: {(0,): 0, (2,): 2, (4,): 1}, 1: {(1,): 0, (3,): 1}})
-    
-    def test_get_boundary_maps_index_dict(self):
-        arr = np.array([0.2,0.1,0.3,0.11, 0.21])
-        glob = get_boundary_maps_index_dict(arr)
-        self.assertDictEqual(glob, {np.int64(0): {0: 0, 1: 1} , np.int64(1): {0: 0, 1: 2}, np.int64(2): {0: 1, 1: 2}, np.int64(3): {0: 2, 1: 2}, np.int64(4): {0: 3, 1: 2} })
+        self.assertDictEqual(
+            flat, {0: {(0,): 0, (2,): 2, (4,): 1}, 1: {(1,): 0, (3,): 1}}
+        )
 
-if __name__=='__main__':
+    def test_get_boundary_maps_index_dict(self):
+        arr = np.array([0.2, 0.1, 0.3, 0.11, 0.21])
+        glob = get_boundary_maps_index_dict(arr)
+        self.assertDictEqual(
+            glob,
+            {
+                np.int64(0): {0: 0, 1: 1},
+                np.int64(1): {0: 0, 1: 2},
+                np.int64(2): {0: 1, 1: 2},
+                np.int64(3): {0: 2, 1: 2},
+                np.int64(4): {0: 3, 1: 2},
+            },
+        )
+
+
+if __name__ == "__main__":
     unittest.main()
