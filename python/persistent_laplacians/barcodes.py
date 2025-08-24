@@ -1,3 +1,4 @@
+import numpy as np
 def compute_barcodes(persistence_data, unique_filtration_values):
     max_filt_index = len(unique_filtration_values) - 1
     barcodes = {}
@@ -12,6 +13,6 @@ def compute_barcodes(persistence_data, unique_filtration_values):
         for i in range(len(unique_filtration_values)):
             persistent_i_inf = bettis.get((i, max_filt_index),0) - bettis.get((i-1, max_filt_index),0)
             if persistent_i_inf != 0:
-                barcodes_n[(i,-1)] = persistent_i_inf
+                barcodes_n[(i,np.inf)] = persistent_i_inf
         barcodes[n] = barcodes_n
     return barcodes

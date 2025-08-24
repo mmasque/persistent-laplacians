@@ -124,12 +124,12 @@ where
             Some(map) => &map,
             None => &SparseMatrix::from(CooMatrix::zeros(num_q_simplices_global, 0)),
         };
-        // Initialize results hash of eigenvalues for q-simplices.
+        // Initialize results hash of homologies for q-simplices.
         let q_homologies = DashMap::new();
         for l in &filtration_indices {
             let dimension_hashmap_l = filt_hash.get(l).unwrap();
             let num_q_simplices_l = dimension_hashmap_l.get(&q).unwrap();
-            // Only have a boundar y map if there are higher dimensional simplices
+            // Only have a boundary map if there are higher dimensional simplices
             let num_qp1_simplices_l = dimension_hashmap_l.get(&(q + 1)).unwrap_or(&0);
             let boundary_map_l_qp1: Option<CsrMatrix<f64>> = if num_qp1_simplices_l > &0 {
                 Some(

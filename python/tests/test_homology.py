@@ -2,6 +2,7 @@ from persistent_laplacians.data import sphere_data
 from persistent_laplacians.barcodes import compute_barcodes
 from persistent_laplacians import persistent_laplacians as pl
 import pytest
+import numpy as np
 
 # generate a variety of sphere parameters
 ns = [20, 30, 40, 50]
@@ -32,10 +33,10 @@ def test_rust_vs_gudhi(n, d, r, noise, seed):
     barcodes = compute_barcodes(result, unique_filtration_values)
     print(barcodes)
     barcodes = [
-        (q, (unique_filtration_values[i], unique_filtration_values[j]))
+        (q, (unique_filtration_values[i], unique_filtration_values[j])) if j != np.inf else (q, (unique_filtration_values[i],np.inf))
         for q in barcodes.keys()
         for (i, j) in barcodes[q].keys()
-    ]
+    ]    
     sorted(barcodes)
 
     # TODO: somehow repeats for now in our code, so remove
