@@ -9,7 +9,6 @@ def compute_eigenvalues(
     boundary_matrices, boundary_maps_index_dict, subsampled_filtration_indices = (
         get_filtration_data(data, num_indices=num_indices)
     )
-    print(subsampled_filtration_indices)
     return pl.smallest_eigenvalue(
         boundary_matrices,
         boundary_maps_index_dict,

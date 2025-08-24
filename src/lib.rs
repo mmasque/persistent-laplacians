@@ -255,7 +255,7 @@ where
             let dimension_hashmap_k = filt_hash.get(&k).unwrap();
             let num_q_simplices_k = dimension_hashmap_k.get(&q).unwrap();
             if num_q_simplices_k == &0 {
-                // The map is always zero, so we don't care
+                // The map is always zero, so we know there won't be eigenvalues
                 continue;
             }
             let num_qm1_simplices_k = dimension_hashmap_k.get(&(q - 1)).unwrap_or(&0);
@@ -322,7 +322,8 @@ where
                 let dimension_hashmap_k = filt_hash.get(&k).unwrap();
                 let num_q_simplices_k = dimension_hashmap_k.get(&q).unwrap();
                 if num_q_simplices_k == &0 {
-                    // The map is always zero, so we don't care
+                    // The map is always zero, so we know there won't be eigenvalues
+                    q_eigenvalues.insert((k, *l), vec![]);
                     continue;
                 }
                 // Compute the up persistent laplacian for K \hookrightarrow L inductively

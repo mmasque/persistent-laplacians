@@ -57,20 +57,6 @@ pub fn compute_homology_from_persistent_laplacian_dense_eigen(
         .count()
 }
 
-// fn compute_homology_from_persistent_laplacian_eigenvalues(
-//     persistent_laplacian: &CsrMatrix<f64>,
-// ) -> usize {
-//     assert!(persistent_laplacian.nrows() > 0 && persistent_laplacian.ncols() > 0);
-//     let dense = to_dense(&persistent_laplacian);
-//     let spectrum_target = SpectrumTarget::Lowest;
-//     let lanczos = HermitianLanczos::new(dense, 50, spectrum_target).unwrap();
-//     lanczos
-//         .eigenvalues
-//         .iter()
-//         .filter(|x| is_float_zero(**x))
-//         .count()
-// }
-
 pub fn compute_homology_from_persistent_laplacian_lanczos_crate(
     persistent_laplacian: &CsrMatrix<f64>,
     zero_tol: f64,
@@ -143,7 +129,7 @@ impl<'a> ScipyEigshConfig<'a> {
             py,
             num_nonzero_eigenvalues,
             // TODO: make configurable
-            Some(1e-2),
+            Some(1e-5),
             tol,
             None,
             "LA",
@@ -222,6 +208,7 @@ pub fn eigsh_scipy(a: &CsrMatrix<f64>, scipy_config: &ScipyEigshConfig) -> PyRes
         nonzero_eigvals = eigsh_scipy_inner(csr_matrix, scipy_config, kwargs)?;
         num_obtained_nonzero_eigenvalues = nonzero_eigvals.len();
     }
+    println!("Obtained {:?} nonzero eigenvalues", nonzero_eigvals);
     nonzero_eigvals.sort_by(|x, y| x.partial_cmp(y).unwrap());
     nonzero_eigvals = nonzero_eigvals.into_iter().take(scipy_config.k).collect();
     Ok(nonzero_eigvals)

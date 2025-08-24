@@ -68,6 +68,17 @@ def compute_boundary_matrices(simplices):
 
     # Compute boundary matrices
     boundary_matrices = {}
+    # special case 0 dimension
+    n_rows = 0
+    n_cols = len(simplices.get(0, []))
+    boundary_matrices[0] = {
+        "n_rows": n_rows,
+        "n_cols": n_cols,
+        "data": np.asarray([], dtype=np.float64),
+        "rows": np.asarray([], dtype=np.int64),
+        "cols": np.asarray([], dtype=np.int64),
+    }
+
     for dim in range(1, max_dim + 1):
         higher_simplices = simplices.get(dim, [])
         lower_simplices = simplices.get(dim - 1, [])
