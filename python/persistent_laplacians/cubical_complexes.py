@@ -168,11 +168,11 @@ def initialize_boundary_matrices(sorted_cell_indices):
     boundary_matrices = {}
     # max dimension
     max_dim = max(sorted_cell_indices.keys())
-    for d in range(1, max_dim + 1):
+    for d in range(0, max_dim + 1):
         # number of cells in this dimension
         num_cells = len(sorted_cell_indices[d])
         # number of cells in lower dimension
-        num_cells_lower = len(sorted_cell_indices[d - 1])
+        num_cells_lower = len(sorted_cell_indices[d - 1]) if d > 0 else 0
         # create a sparse matrix for the boundary
         boundary_matrices[d] = {
             "n_rows": num_cells_lower,
