@@ -33,7 +33,7 @@ jobs:
       run: |
         source venv/bin/activate
         python -m pip install --upgrade pip
-        pip install flake8 pytest maturin
+        pip install flake8 pytest maturin petls
 
     - name: Build Rust/Python extension with maturin
       run: |
