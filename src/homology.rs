@@ -208,7 +208,6 @@ pub fn eigsh_scipy(a: &CsrMatrix<f64>, scipy_config: &ScipyEigshConfig) -> PyRes
         nonzero_eigvals = eigsh_scipy_inner(csr_matrix, scipy_config, kwargs)?;
         num_obtained_nonzero_eigenvalues = nonzero_eigvals.len();
     }
-    println!("Obtained {:?} nonzero eigenvalues", nonzero_eigvals);
     nonzero_eigvals.sort_by(|x, y| x.partial_cmp(y).unwrap());
     nonzero_eigvals = nonzero_eigvals.into_iter().take(scipy_config.k).collect();
     Ok(nonzero_eigvals)

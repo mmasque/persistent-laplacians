@@ -17,8 +17,7 @@ dependencies = [
 dynamic = ["version"]
 [project.optional-dependencies]
 tests = [
-    "pytest",
-    "petls",
+    "pytest"
 ]
 [tool.maturin]
 python-source = "python"

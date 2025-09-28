@@ -1,3 +1,4 @@
+use core::num;
 use csv::Writer;
 use dashmap::DashMap;
 use homology::compute_homology_from_persistent_laplacian_dense;
@@ -196,7 +197,8 @@ where
     homologies
 }
 
-/// Computes some nonzero persistent eigenvalues of a filtration.
+/// Computes some nonzero persistent eigenvalues of a filtration, returning the eigenvalues from the up and down Laplacians jointly,
+/// as eigenvalues of the Laplapcian.
 ///
 /// `sparse_boundary_maps` is a map from dimension to sparse boundary maps
 /// `filt_hash` is a map from filtration index to a map of dimension to number of simplices
@@ -216,6 +218,57 @@ pub fn persistent_eigenvalues_of_filtration<F, G>(
     downsampled_filtration_indices: Option<Vec<usize>>,
     zero_tol: f64,
 ) -> HashMap<usize, HashMap<(usize, usize), Vec<f64>>>
+where
+    F: Fn(usize, CsrMatrix<f64>, f64) -> Option<CsrMatrix<f64>>,
+    G: Fn(&CsrMatrix<f64>, usize, f64) -> Vec<f64>,
+{
+    persistent_eigenvalues_of_filtration_separate(
+        sparse_boundary_maps,
+        filt_hash,
+        compute_up_persistent_laplacian,
+        compute_nonzero_eigenvalues,
+        num_nonzero_eigenvalues,
+        downsampled_filtration_indices,
+        zero_tol,
+    )
+    .into_iter()
+    .map(|(outer_key, inner_map)| {
+        let new_inner = inner_map
+            .into_iter()
+            .map(|(pair_key, (mut v1, mut v2))| {
+                v1.append(&mut v2);
+                v1.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                v1.truncate(num_nonzero_eigenvalues);
+
+                (pair_key, v1)
+            })
+            .collect::<HashMap<_, _>>();
+        (outer_key, new_inner)
+    })
+    .collect()
+}
+
+/// Computes some nonzero persistent eigenvalues of a filtration, returning the eigenvalues from the up
+/// and down Laplacians separately.
+///
+/// `sparse_boundary_maps` is a map from dimension to sparse boundary maps
+/// `filt_hash` is a map from filtration index to a map of dimension to number of simplices
+/// `compute_up_persistent_laplacian` is a function that computes the up persistent laplacian
+/// `compute_nonzero_eigenvalues` is a function that computes nonzero eigenvalues from a persistent laplacian
+/// `num_nonzero_eigenvalues` is the number of nonzero eigenvalues to compute
+/// `downsampled_filtration_indices` is an optional vector of indices of the filtration to use when downsampling
+/// `zero_tol` is a tolerance for considering a floating-point number as zero
+fn persistent_eigenvalues_of_filtration_separate<F, G>(
+    sparse_boundary_maps: HashMap<usize, SparseMatrix<f64>>,
+    // filtration_index: {q: dimension_q_simplices}
+    filt_hash: HashMap<usize, HashMap<usize, usize>>,
+    compute_up_persistent_laplacian: F,
+    compute_nonzero_eigenvalues: G,
+    num_nonzero_eigenvalues: usize,
+    // Indices of the filtration to use when downsampling
+    downsampled_filtration_indices: Option<Vec<usize>>,
+    zero_tol: f64,
+) -> HashMap<usize, HashMap<(usize, usize), (Vec<f64>, Vec<f64>)>>
 where
     F: Fn(usize, CsrMatrix<f64>, f64) -> Option<CsrMatrix<f64>>,
     G: Fn(&CsrMatrix<f64>, usize, f64) -> Vec<f64>,
@@ -323,7 +376,7 @@ where
                 let num_q_simplices_k = dimension_hashmap_k.get(&q).unwrap();
                 if num_q_simplices_k == &0 {
                     // The map is always zero, so we know there won't be eigenvalues
-                    q_eigenvalues.insert((k, *l), vec![]);
+                    q_eigenvalues.insert((k, *l), (vec![], vec![]));
                     continue;
                 }
                 // Compute the up persistent laplacian for K \hookrightarrow L inductively
@@ -340,7 +393,7 @@ where
                 ])
                 .unwrap();
                 let instant = Instant::now();
-                let up_persistent_nonzero_eigs = match up_persistent_laplacian_option.as_ref() {
+                let mut up_persistent_nonzero_eigs = match up_persistent_laplacian_option.as_ref() {
                     Some(up_persistent_laplacian) => compute_nonzero_eigenvalues(
                         &up_persistent_laplacian,
                         num_nonzero_eigenvalues,
@@ -348,6 +401,9 @@ where
                     ),
                     None => vec![],
                 };
+                up_persistent_nonzero_eigs.sort_by(|x, y| x.partial_cmp(y).unwrap());
+                up_persistent_nonzero_eigs.truncate(num_nonzero_eigenvalues);
+
                 let elapsed = instant.elapsed().as_secs_f64().to_string();
                 wtr.write_record(&[
                     "u",
@@ -357,14 +413,12 @@ where
                     &elapsed,
                 ])
                 .unwrap();
-                // Get the smallest across down and up
-                let down_eigs = down_eigenvalues_q.get(&k).cloned().unwrap_or_default();
-                let mut smallest_nonzero_eigs: Vec<f64> = Vec::new();
-                smallest_nonzero_eigs.extend_from_slice(&down_eigs);
-                smallest_nonzero_eigs.extend_from_slice(&up_persistent_nonzero_eigs);
-                smallest_nonzero_eigs.sort_by(|x, y| x.partial_cmp(y).unwrap());
-                smallest_nonzero_eigs.truncate(num_nonzero_eigenvalues);
-                q_eigenvalues.insert((k, *l), smallest_nonzero_eigs);
+
+                let mut down_eigs = down_eigenvalues_q.get(&k).cloned().unwrap_or_default();
+                down_eigs.sort_by(|x, y| x.partial_cmp(y).unwrap());
+                down_eigs.truncate(num_nonzero_eigenvalues);
+
+                q_eigenvalues.insert((k, *l), (down_eigs, up_persistent_nonzero_eigs));
             }
         }
         eigenvalues.insert(*q, q_eigenvalues.into_iter().collect());
@@ -409,11 +463,13 @@ pub fn process_tda(
 ///     filtration_subsampling (list, optional): Indices of the filtration to use when downsampling.
 ///     use_scipy (bool): If true, uses SciPy's eigsh for eigenvalue computation. Otherwise uses dense computation.
 ///     use_stepwise_schur (bool): If true, uses stepwise Schur decomposition for up persistent Laplacian computation.
+///     num_nonzero_eigenvalues (int): The number of nonzero eigenvalues to compute (default is 1).
+///     split_up_down (bool): If true, returns the number of nonzero eigenvalues from up and down Laplacians separately.
 /// Returns:
-///     dict: A nested dictionary of the smallest nonzero persistent eigenvalue at each filtration pair.
+///     dict: A nested dictionary of the smallest nonzero persistent eigenvalues at each filtration pair.
 #[pyfunction]
-#[pyo3(signature = (boundary_maps, filt, zero_tol, filtration_subsampling=None, use_scipy=false, use_stepwise_schur=false))]
-pub fn smallest_eigenvalue(
+#[pyo3(signature = (boundary_maps, filt, zero_tol, filtration_subsampling=None, use_scipy=false, use_stepwise_schur=false, num_nonzero_eigenvalues=1, split_up_down=false))]
+pub fn smallest_eigenvalues(
     py: Python,
     boundary_maps: &PyDict,
     filt: &PyDict,
@@ -421,6 +477,8 @@ pub fn smallest_eigenvalue(
     filtration_subsampling: Option<Vec<usize>>,
     use_scipy: bool,
     use_stepwise_schur: bool,
+    num_nonzero_eigenvalues: usize,
+    split_up_down: bool,
 ) -> PyResult<PyObject> {
     let sparse_boundary_maps = process_sparse_dict(boundary_maps).unwrap();
     let laplacian_compute = if use_stepwise_schur {
@@ -428,44 +486,54 @@ pub fn smallest_eigenvalue(
     } else {
         compute_up_persistent_laplacian_schur
     };
-
-    let filt_hash = parse_nested_dict(&filt).unwrap();
-    let eigenvalues = if use_scipy {
-        Python::with_gil(|py| {
-            let scipy_config =
-                ScipyEigshConfig::new_from_num_nonzero_eigenvalues_tol(1, zero_tol, py);
-            persistent_eigenvalues_of_filtration(
-                sparse_boundary_maps,
-                filt_hash,
-                laplacian_compute,
-                |matrix, _num_nonzero, _zero_tol| {
-                    compute_nonzero_eigenvalues_from_persistent_laplacian_scipy(
-                        matrix,
-                        &scipy_config,
-                    )
-                },
-                1,
-                filtration_subsampling,
+    let eigenvalues_compute: Box<dyn Fn(&CsrMatrix<f64>, usize, f64) -> Vec<f64>> = if use_scipy {
+        let scipy_config = ScipyEigshConfig::new_from_num_nonzero_eigenvalues_tol(
+            num_nonzero_eigenvalues,
+            zero_tol,
+            py,
+        );
+        Box::new(move |matrix, _num_nonzero, _zero_tol| {
+            compute_nonzero_eigenvalues_from_persistent_laplacian_scipy(matrix, &scipy_config)
+        })
+    } else {
+        Box::new(|matrix, num_nonzero, zero_tol| {
+            compute_nonzero_eigenvalues_from_persistent_laplacian_dense(
+                matrix,
+                num_nonzero,
                 zero_tol,
             )
         })
-    } else {
-        persistent_eigenvalues_of_filtration(
+    };
+
+    let filt_hash = parse_nested_dict(&filt).unwrap();
+    if split_up_down {
+        Ok(persistent_eigenvalues_of_filtration_separate(
             sparse_boundary_maps,
             filt_hash,
             laplacian_compute,
-            compute_nonzero_eigenvalues_from_persistent_laplacian_dense,
-            1,
+            eigenvalues_compute,
+            num_nonzero_eigenvalues,
             filtration_subsampling,
             zero_tol,
         )
-    };
-    Ok(eigenvalues.into_py(py))
+        .into_py(py))
+    } else {
+        Ok(persistent_eigenvalues_of_filtration(
+            sparse_boundary_maps,
+            filt_hash,
+            laplacian_compute,
+            eigenvalues_compute,
+            num_nonzero_eigenvalues,
+            filtration_subsampling,
+            zero_tol,
+        )
+        .into_py(py))
+    }
 }
 
 #[pymodule]
 fn persistent_laplacians(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(process_tda, m)?)?;
-    m.add_function(wrap_pyfunction!(smallest_eigenvalue, m)?)?;
+    m.add_function(wrap_pyfunction!(smallest_eigenvalues, m)?)?;
     Ok(())
 }

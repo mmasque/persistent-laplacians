@@ -27,6 +27,7 @@ pub fn compute_nonzero_eigenvalues_from_persistent_laplacian_dense(
         .eigenvalues
         .iter()
         .filter(|&&sigma| !is_float_zero(sigma, zero_tol))
+        .filter(|&sigma| sigma.is_normal())
         .cloned()
         .collect();
     nonzero_eigenvalues.sort_by(|a, b| a.partial_cmp(b).unwrap());
