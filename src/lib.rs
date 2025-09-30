@@ -207,6 +207,7 @@ where
 /// `num_nonzero_eigenvalues` is the number of nonzero eigenvalues to compute
 /// `downsampled_filtration_indices` is an optional vector of indices of the filtration to use when downsampling
 /// `zero_tol` is a tolerance for considering a floating-point number as zero
+/// `max_dim` is an optional maximum dimension to compute eigenvalues for
 pub fn persistent_eigenvalues_of_filtration<F, G>(
     sparse_boundary_maps: HashMap<usize, SparseMatrix<f64>>,
     // filtration_index: {q: dimension_q_simplices}
@@ -217,6 +218,7 @@ pub fn persistent_eigenvalues_of_filtration<F, G>(
     // Indices of the filtration to use when downsampling
     downsampled_filtration_indices: Option<Vec<usize>>,
     zero_tol: f64,
+    max_dim: Option<usize>,
 ) -> HashMap<usize, HashMap<(usize, usize), Vec<f64>>>
 where
     F: Fn(usize, CsrMatrix<f64>, f64) -> Option<CsrMatrix<f64>>,
@@ -230,6 +232,7 @@ where
         num_nonzero_eigenvalues,
         downsampled_filtration_indices,
         zero_tol,
+        max_dim,
     )
     .into_iter()
     .map(|(outer_key, inner_map)| {
@@ -258,6 +261,7 @@ where
 /// `num_nonzero_eigenvalues` is the number of nonzero eigenvalues to compute
 /// `downsampled_filtration_indices` is an optional vector of indices of the filtration to use when downsampling
 /// `zero_tol` is a tolerance for considering a floating-point number as zero
+/// `max_dim` is an optional maximum dimension to compute eigenvalues for
 fn persistent_eigenvalues_of_filtration_separate<F, G>(
     sparse_boundary_maps: HashMap<usize, SparseMatrix<f64>>,
     // filtration_index: {q: dimension_q_simplices}
@@ -268,6 +272,7 @@ fn persistent_eigenvalues_of_filtration_separate<F, G>(
     // Indices of the filtration to use when downsampling
     downsampled_filtration_indices: Option<Vec<usize>>,
     zero_tol: f64,
+    max_dim: Option<usize>,
 ) -> HashMap<usize, HashMap<(usize, usize), (Vec<f64>, Vec<f64>)>>
 where
     F: Fn(usize, CsrMatrix<f64>, f64) -> Option<CsrMatrix<f64>>,
@@ -281,6 +286,9 @@ where
     filtration_indices.sort_by(|a, b| b.cmp(a));
     let mut dimensions: Vec<&usize> = sparse_boundary_maps.keys().collect::<Vec<_>>();
     dimensions.sort();
+    if max_dim.is_some() {
+        dimensions.retain(|&&d| d <= max_dim.unwrap());
+    }
     // dimension hashmap: q: dim of C_q at filtration indices
     for q in dimensions {
         let mut wtr = Writer::from_path(format!("timings_{}.csv", q)).unwrap();
@@ -468,7 +476,7 @@ pub fn process_tda(
 /// Returns:
 ///     dict: A nested dictionary of the smallest nonzero persistent eigenvalues at each filtration pair.
 #[pyfunction]
-#[pyo3(signature = (boundary_maps, filt, zero_tol, filtration_subsampling=None, use_scipy=false, use_stepwise_schur=false, num_nonzero_eigenvalues=1, split_up_down=false))]
+#[pyo3(signature = (boundary_maps, filt, zero_tol, filtration_subsampling=None, use_scipy=false, use_stepwise_schur=false, num_nonzero_eigenvalues=1, split_up_down=false, max_dim=None))]
 pub fn smallest_eigenvalues(
     py: Python,
     boundary_maps: &PyDict,
@@ -479,6 +487,7 @@ pub fn smallest_eigenvalues(
     use_stepwise_schur: bool,
     num_nonzero_eigenvalues: usize,
     split_up_down: bool,
+    max_dim: Option<usize>,
 ) -> PyResult<PyObject> {
     let sparse_boundary_maps = process_sparse_dict(boundary_maps).unwrap();
     let laplacian_compute = if use_stepwise_schur {
@@ -515,6 +524,7 @@ pub fn smallest_eigenvalues(
             num_nonzero_eigenvalues,
             filtration_subsampling,
             zero_tol,
+            max_dim,
         )
         .into_py(py))
     } else {
@@ -526,6 +536,7 @@ pub fn smallest_eigenvalues(
             num_nonzero_eigenvalues,
             filtration_subsampling,
             zero_tol,
+            max_dim,
         )
         .into_py(py))
     }
