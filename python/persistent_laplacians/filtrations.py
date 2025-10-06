@@ -5,9 +5,9 @@ import gudhi as gd
 import bisect
 
 
-def get_filtration_data(data, num_indices=None):
+def get_filtration_data(data, num_indices=None, max_alpha_square=np.inf):
     alpha = gd.AlphaComplex(points=data)
-    st = alpha.create_simplex_tree()
+    st = alpha.create_simplex_tree(max_alpha_square=max_alpha_square)
     filtration = list(st.get_filtration())
     unique_filtration_values = sorted(list(set([f for (_, f) in filtration])))
     simplices_by_dim, simplices_by_dim_only_filt = simplices_by_dimension(filtration)
